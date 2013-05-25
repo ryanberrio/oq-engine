@@ -15,7 +15,6 @@
   along with OpenQuake.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-
 -- admin.oq_user
 CREATE UNIQUE INDEX admin_oq_user_user_name_uniq_idx ON admin.oq_user(user_name);
 
@@ -68,6 +67,8 @@ CREATE INDEX hzrdr_lt_realization_hazard_calculation_id_idx on hzrdr.lt_realizat
 
 -- gmf_agg
 CREATE INDEX hzrdr_gmf_agg_idx on hzrdr.gmf_agg using gist(location);
+CREATE UNIQUE INDEX hzrdr_gmf_agg_uniq_idx ON hzrdr.gmf_agg(
+              gmf_collection_id, imt, sa_period, sa_damping, location);
 
 -- riskr indexes
 CREATE INDEX riskr_loss_map_output_id_idx on riskr.loss_map(output_id);

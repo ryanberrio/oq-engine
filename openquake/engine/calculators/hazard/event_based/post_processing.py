@@ -162,7 +162,7 @@ def gmf_to_hazard_curve_task(job_id, point, lt_rlz_id, imt, imls, hc_coll_id,
         imt=imt,
         sa_period=sa_period,
         sa_damping=sa_damping).extra(where=[
-            "location::geometry ~= 'SRID=4326;%s'::geometry" % point.wkt2d])
+            "location ~= 'SRID=4326;%s'" % point.wkt2d])
     gmvs = list(itertools.chain(*(g.gmvs for g in gmfs)))
 
     # Compute the hazard curve PoEs:
@@ -189,8 +189,7 @@ def insert_into_gmf_agg(job_id, gmf_collection_id):
     insert_query = '''-- running
     INSERT INTO hzrdr.gmf_agg (gmf_collection_id, imt, sa_damping, sa_period,
                                location, gmvs, rupture_ids)
-    SELECT b.gmf_collection_id, imt, sa_damping, sa_period,
-       geography(location::text),
+    SELECT b.gmf_collection_id, imt, sa_damping, sa_period, location::text,
        array_concat(gmvs ORDER BY gmf_set_id, result_grp_ordinal),
        array_concat(rupture_ids ORDER BY gmf_set_id, result_grp_ordinal)
     FROM hzrdr.gmf AS a, hzrdr.gmf_set AS b

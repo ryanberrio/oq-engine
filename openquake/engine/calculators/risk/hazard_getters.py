@@ -317,11 +317,13 @@ class GroundMotionValuesGetter(HazardGetter):
   SELECT DISTINCT ON (riski.exposure_data.id)
         riski.exposure_data.id, gmf_agg.id
   FROM riski.exposure_data JOIN hzrdr.gmf_agg
-  ON ST_DWithin(riski.exposure_data.site, gmf_agg.location, %s)
+  ON ST_DWithin(riski.exposure_data.site::geography,
+                gmf_agg.location::geography, %s)
   WHERE taxonomy = %s AND exposure_model_id = %s AND imt = %s AND
         gmf_collection_id = %s {}
   ORDER BY riski.exposure_data.id,
-           ST_Distance(riski.exposure_data.site, gmf_agg.location, false)
+           ST_Distance(riski.exposure_data.site::geography,
+                       gmf_agg.location::geography, false)
            """.format(spectral_filters)  # this will fill in the {}
 
         args = (self.max_distance * KILOMETERS_TO_METERS,

@@ -659,10 +659,10 @@ CREATE TABLE hzrdr.gmf_agg (
         --    ((imt = 'SA') AND (sa_damping IS NOT NULL))
         --    OR ((imt != 'SA') AND (sa_damping IS NULL))),
     gmvs float[],
-    rupture_ids int[],
-    location GEOGRAPHY(point) NOT NULL,
-    UNIQUE (gmf_collection_id, imt, sa_period, sa_damping, location)
+    rupture_ids int[]
 ) TABLESPACE hzrdr_ts;
+SELECT AddGeometryColumn('hzrdr', 'gmf_agg', 'location', 4326, 'POINT', 2);
+ALTER TABLE hzrdr.gmf_agg ALTER COLUMN location SET NOT NULL;
 
 
 CREATE TABLE hzrdr.disagg_result (
