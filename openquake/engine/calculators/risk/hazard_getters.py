@@ -75,12 +75,6 @@ class HazardGetter(object):
         else:
             self.weight = None
 
-        # FIXME(lp). It is better to directly store the convex hull
-        # instead of the mesh. We are not doing it because
-        # hazardlib.Polygon is not (yet) pickeable
-        self._assets_mesh = geo.mesh.Mesh.from_points_list([
-            geo.point.Point(asset.site.x, asset.site.y)
-            for asset in self.assets])
         self.asset_dict = dict((asset.id, asset) for asset in self.assets)
         self.all_asset_ids = set(self.asset_dict)
 
@@ -324,18 +318,15 @@ class GroundMotionValuesGetter(HazardGetter):
         riski.exposure_data.id, gmf_agg.id
   FROM riski.exposure_data JOIN hzrdr.gmf_agg
   ON ST_DWithin(riski.exposure_data.site, gmf_agg.location, %s)
-  WHERE taxonomy = %s AND exposure_model_id = %s AND
-        riski.exposure_data.site && %s AND imt = %s AND
+  WHERE taxonomy = %s AND exposure_model_id = %s AND imt = %s AND
         gmf_collection_id = %s {}
   ORDER BY riski.exposure_data.id,
            ST_Distance(riski.exposure_data.site, gmf_agg.location, false)
            """.format(spectral_filters)  # this will fill in the {}
 
-        assets_extent = self._assets_mesh.get_convex_hull()
         args = (self.max_distance * KILOMETERS_TO_METERS,
                 self.assets[0].taxonomy,
-                self.assets[0].exposure_model_id,
-                assets_extent.wkt) + args
+                self.assets[0].exposure_model_id) + args
 
         cursor.execute(query, args)
         # print cursor.mogrify(query, args)
