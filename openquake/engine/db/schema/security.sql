@@ -82,10 +82,8 @@ GRANT SELECT,INSERT        ON hzrdr.hazard_curve      TO oq_reslt_writer;
 GRANT SELECT,INSERT,UPDATE ON hzrdr.hazard_curve_data TO oq_reslt_writer;
 
 
-GRANT SELECT,INSERT        ON hzrdr.gmf_collection    TO oq_reslt_writer;
-GRANT SELECT,INSERT,DELETE ON hzrdr.gmf_set           TO oq_reslt_writer;
-GRANT SELECT,INSERT,DELETE ON hzrdr.gmf               TO oq_reslt_writer;
-GRANT SELECT,INSERT        ON hzrdr.gmf_agg           TO oq_reslt_writer;
+GRANT SELECT,INSERT        ON hzrdr.gmf    TO oq_reslt_writer;
+GRANT SELECT,INSERT        ON hzrdr.gmf_data           TO oq_reslt_writer;
 GRANT SELECT,INSERT        ON hzrdr.disagg_result     TO oq_reslt_writer;
 GRANT SELECT,INSERT,UPDATE ON hzrdr.hazard_map        TO oq_reslt_writer;
 GRANT SELECT,INSERT        ON hzrdr.uhs               TO oq_reslt_writer;
@@ -115,6 +113,7 @@ GRANT SELECT,INSERT,UPDATE ON riskr.dmg_dist_per_asset        TO oq_reslt_writer
 GRANT SELECT,INSERT,UPDATE ON riskr.dmg_dist_per_taxonomy     TO oq_reslt_writer;
 GRANT SELECT,INSERT,UPDATE ON riskr.dmg_dist_total            TO oq_reslt_writer;
 GRANT SELECT,INSERT,UPDATE ON riskr.event_loss                TO oq_reslt_writer;
+GRANT SELECT,INSERT,UPDATE ON riskr.event_loss_data           TO oq_reslt_writer;
 
 -- uiapi schema
 GRANT SELECT,INSERT,UPDATE ON uiapi.input              TO oq_job_init;
@@ -139,4 +138,4 @@ GRANT SELECT,INSERT        ON uiapi.performance        TO oq_job_init;
 
 
 -- helper views
-GRANT SELECT               ON hzrdr.gmf_collection_family TO oq_job_init;
+GRANT SELECT               ON hzrdr.gmf_family TO oq_job_init;

@@ -74,8 +74,6 @@ COMMENT ON TABLE hzrdr.hazard_curve_data IS 'Holds location/POE data for hazard 
 COMMENT ON COLUMN hzrdr.hazard_curve_data.hazard_curve_id IS 'The foreign key to the hazard curve record for this node.';
 COMMENT ON COLUMN hzrdr.hazard_curve_data.poes IS 'Probabilities of exceedence.';
 
-COMMENT ON COLUMN hzrdr.gmf.rupture_ids IS 'a vector of ids to the hzrdr.ses_rupture table. for each id you can find the corresponding ground motion value in gmvs at the same index';
-
 COMMENT ON TABLE hzrdr.hazard_map IS 'A complete hazard map, for a given IMT and PoE';
 COMMENT ON COLUMN hzrdr.hazard_map.poe IS 'Probability of exceedence';
 COMMENT ON COLUMN hzrdr.hazard_map.statistics IS 'Statistic type, one of:
@@ -89,7 +87,7 @@ COMMENT ON TABLE riski.exposure_data IS 'Per-asset risk exposure data';
 COMMENT ON COLUMN riski.exposure_data.area IS 'asset area';
 COMMENT ON COLUMN riski.exposure_data.asset_ref IS 'A unique identifier (within the exposure model) for the asset at hand';
 COMMENT ON COLUMN riski.exposure_data.exposure_model_id IS 'Foreign key to the exposure model';
-COMMENT ON COLUMN riski.exposure_data.units IS 'number of assets, people etc.';
+COMMENT ON COLUMN riski.exposure_data.number_of_units IS 'number of assets, people etc.';
 COMMENT ON COLUMN riski.exposure_data.taxonomy IS 'A reference to the taxonomy that should be used for the asset at hand';
 
 

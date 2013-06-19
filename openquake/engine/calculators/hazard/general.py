@@ -212,7 +212,6 @@ def get_closest_site_model_data(input_model, point):
         return None
 
 
-
 def gen_sources(src_ids, apply_uncertainties, rupture_mesh_spacing,
                 width_of_mfd_bin, area_source_discretization):
     """
@@ -637,6 +636,10 @@ class BaseHazardCalculator(base.Calculator):
                 hc.intensity_measure_types = list(set(
                     hc.intensity_measure_types))
             hc.save()
+            logs.LOG.info("Got IMT and levels "
+                          "from vulnerability models: %s - %s" % (
+                              hc.intensity_measure_types_and_levels,
+                              hc.intensity_measure_types))
 
         queryset = self.hc.inputs.filter(input_type='fragility')
         if queryset.exists():
@@ -710,6 +713,7 @@ class BaseHazardCalculator(base.Calculator):
             validate_site_model(site_model_data, points)
         else:
             points = self.hc.points_to_compute()
+
         sites = []
         coords = []
         for pt in points:

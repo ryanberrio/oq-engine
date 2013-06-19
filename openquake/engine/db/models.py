@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
@@ -25,14 +26,23 @@
 Model representations of the OpenQuake DB tables.
 '''
 
+import operator
 import collections
 import itertools
-import operator
 import os
 import re
 from datetime import datetime
 
+
+def set_django_settings_module():
+    if not os.getenv('DJANGO_SETTINGS_MODULE', False):
+        os.environ['DJANGO_SETTINGS_MODULE'] = 'openquake.engine.settings'
+
+set_django_settings_module()
+
+
 import numpy
+from scipy import interpolate
 
 from django.db import transaction, connections
 from django.contrib.gis.db import models as djm
@@ -83,7 +93,20 @@ MAX_SINT_32 = (2 ** 31) - 1
 
 
 #: Kind of supported type of loss outputs
-LOSS_TYPES = ["structural", "nonstructural", "occupants", "contents"]
+LOSS_TYPES = ["structural", "nonstructural", "fatalities", "contents"]
+
+
+#: relative tolerance to consider two risk outputs (almost) equal
+RISK_RTOL = 0.08
+
+
+#: absolute tolerance to consider two risk outputs (almost) equal
+RISK_ATOL = 0.01
+
+
+def risk_almost_equal(o1, o2, key=lambda x: x, rtol=RISK_RTOL, atol=RISK_ATOL):
+    return numpy.testing.assert_allclose(
+        numpy.array(key(o1)), numpy.array(key(o2)), rtol=rtol, atol=atol)
 
 
 def getcursor(route):
@@ -546,13 +569,12 @@ class HazardCalculation(djm.Model):
     # The points of interest for a calculation.
     sites = djm.MultiPointField(srid=DEFAULT_SRID, null=True, blank=True)
     # this is initialized by initialize_site_model
-    site_collection = fields.PickleField(
-        null=True, blank=True, db_column='site_collection')
+    site_collection = fields.PickleField(null=True, blank=True)
 
     ########################
     # Logic Tree parameters:
     ########################
-    random_seed = djm.IntegerField()
+    random_seed = djm.IntegerField(null=True, blank=True)
     number_of_logic_tree_samples = djm.IntegerField(null=True, blank=True)
 
     ###############################################
@@ -867,9 +889,35 @@ class HazardCalculation(djm.Model):
         :returns: the ids of the inserted HazardSite instances
         """
         sites = [HazardSite(hazard_calculation=self,
-                          location='POINT(%s %s)' % coord)
+                            location='POINT(%s %s)' % coord)
                  for coord in coordinates]
         return writer.CacheInserter.saveall(sites)
+
+    def total_investigation_time(self):
+        """
+        Helper method to compute the total investigation time for a
+        complete set of stochastic event sets for all realizations.
+        """
+        if self.number_of_logic_tree_samples > 0:
+            # The calculation is set to do Monte-Carlo sampling of logic trees
+            # The number of logic tree realizations is specified explicitly in
+            # job configuration.
+            n_lt_realizations = self.number_of_logic_tree_samples
+        else:
+            # The calculation is set do end-branch enumeration of all logic
+            # tree paths
+            # We can get the number of logic tree realizations by counting
+            # initialized lt_realization records.
+            n_lt_realizations = LtRealization.objects.filter(
+                hazard_calculation=self).count()
+
+        investigation_time = (self.investigation_time
+                              * self.ses_per_logic_tree_path
+                              * n_lt_realizations)
+
+        return investigation_time
+
+
 class RiskCalculation(djm.Model):
     '''
     Parameters needed to run a Risk job.
@@ -917,7 +965,7 @@ class RiskCalculation(djm.Model):
     maximum_distance = djm.FloatField(
         null=True, blank=True, default=DEFAULT_MAXIMUM_DISTANCE)
     # the hazard output (it can point to an HazardCurve or to a
-    # GmfCollection) used by the risk calculation
+    # Gmf) used by the risk calculation
     hazard_output = djm.ForeignKey("Output", null=True, blank=True)
 
     # the HazardCalculation object used by the risk calculation when
@@ -938,10 +986,6 @@ class RiskCalculation(djm.Model):
     ####################################################
     # For calculators that output statistical results
     ####################################################
-    mean_loss_curves = fields.OqNullBooleanField(
-        help_text='Compute mean loss curves, maps, etc.',
-        null=True,
-        blank=True)
     quantile_loss_curves = fields.FloatArrayField(
         help_text='List of quantiles for computing quantile outputs',
         null=True,
@@ -1087,14 +1131,6 @@ class RiskCalculation(djm.Model):
         exposure_input = self.exposure_input or self.inputs.get(
             input_type="exposure")
         return exposure_input.exposuremodel
-
-    def will_compute_loss_curve_statistics(self):
-        """
-        Return true if this risk calculation will compute mean and/or
-        quantile loss curves
-        """
-        return ((self.mean_loss_curves or self.quantile_loss_curves) and
-                self.calculation_mode in ['classical', 'event_based'])
 
 
 def _prep_geometry(kwargs):
@@ -1296,8 +1332,8 @@ class Output(djm.Model):
         if self.output_type in hazard_output_types:
             if container.lt_realization_id is not None:
                 return self.LogicTreePath(
-                    container.lt_realization.gsim_lt_path,
-                    container.lt_realization.sm_lt_path)
+                    tuple(container.lt_realization.gsim_lt_path),
+                    tuple(container.lt_realization.sm_lt_path))
             else:
                 return self.LogicTreePath(None, None)
         elif self.output_type in risk_output_types:
@@ -1634,17 +1670,6 @@ class SESRupture(djm.Model):
     # HazardLib Surface object. Stored as it is needed by risk disaggregation
     surface = fields.PickleField()
 
-    result_grp_ordinal = djm.IntegerField()
-    # NOTE(LB): The ordinal of a rupture within a given result group (indicated
-    # by ``result_grp_ordinal``). This rupture correspond to the indices of the
-    # ``gmvs`` field in Gmf. Thus, if you join SESRupture and Gmf records on
-    # the ``result_grp_ordinal``, you can extract ground motion values for a
-    # specific rupture.
-    # At the moment this functionality is not directly used, but in the future
-    # we will need to provide some way of tracing ground motion to the original
-    # rupture.
-    rupture_ordinal = djm.IntegerField()
-
     class Meta:
         db_table = 'hzrdr\".\"ses_rupture'
 
@@ -1721,7 +1746,7 @@ class _Point(object):
         self.y = y
 
 
-class GmfCollection(djm.Model):
+class Gmf(djm.Model):
     """
     A collection of ground motion field (GMF) sets for a given logic tree
     realization.
@@ -1733,17 +1758,17 @@ class GmfCollection(djm.Model):
     lt_realization = djm.ForeignKey('LtRealization', null=True)
 
     class Meta:
-        db_table = 'hzrdr\".\"gmf_collection'
+        db_table = 'hzrdr\".\"gmf'
 
-    # NB: uses the helper view gmf_collection_family
+    # NB: uses the helper view gmf_family
     def get_children(self):
         """
-        Get the children of a given gmf_collection, if any.
+        Get the children of a given gmf, if any.
         :returns:
-          A list of :class:`openquake.engine.db.models.GmfCollection` instances
+          A list of :class:`openquake.engine.db.models.Gmf` instances
         """
         curs = getcursor('job_init')
-        curs.execute('select child_id from hzrdr.gmf_collection_family '
+        curs.execute('select child_id from hzrdr.gmf_family '
                      'where parent_id=%s', (self.id,))
         return [self.__class__.objects.get(pk=r[0]) for r in curs]
 
@@ -1779,9 +1804,9 @@ class GmfCollection(djm.Model):
                array_agg(ST_Y(location::geometry)) AS ys
         FROM (SELECT imt, sa_period, sa_damping, ses_id,
              unnest(rupture_ids) as rupture_id, location, unnest(gmvs) AS gmv
-           FROM hzrdr.gmf_agg, hzrdi.hazard_site
+           FROM hzrdr.gmf_data, hzrdi.hazard_site
            WHERE site_id = hzrdi.hazard_site.id AND hazard_calculation_id=%s
-             AND gmf_collection_id=%d AND ses_id=%d) AS x
+             AND gmf_id=%d AND ses_id=%d) AS x
         GROUP BY imt, sa_period, sa_damping, rupture_id
         """ % (hc.id, self.id, ses.id)
             if orderby:  # may be used in tests to get reproducible results
@@ -1799,39 +1824,6 @@ class GmfCollection(djm.Model):
             yield _GmfsPerSES(gmfs, ses.investigation_time, ses.id)
 
     __iter__ = get_gmfs_per_ses
-
-
-class GmfSet(djm.Model):
-    """
-    A set of ground motion fields for a given investigation time (in years).
-    """
-    gmf_collection = djm.ForeignKey('GmfCollection')
-    investigation_time = djm.FloatField()
-    # Keep track of the stochastic event set which this GMF set is associated
-    # with.
-    ses_ordinal = djm.IntegerField()
-
-    class Meta:
-        db_table = 'hzrdr\".\"gmf_set'
-
-    @property
-    def stochastic_event_set_id(self):
-        """
-
-        :returns:
-            The ID of the stochastic event set which this ground motion field
-            set has been generated from.
-        """
-        if self.ses_ordinal is None:  # complete logic tree
-            job = self.gmf_collection.output.oq_job
-            return SES.objects.get(
-                ordinal=None,
-                ses_collection__output__oq_job=job).id
-        else:
-            rlz = self.gmf_collection.lt_realization
-            return SES.objects.get(
-                ses_collection__lt_realization=rlz,
-                ordinal=self.ses_ordinal).id
 
 
 class _GroundMotionField(object):
@@ -1876,32 +1868,12 @@ class _GroundMotionFieldNode(object):
             self.location.x, self.location.y, self.gmv)
 
 
-class Gmf(djm.Model):
-    """
-    Ground Motion Field: A collection of ground motion values and their
-    respective geographical locations.
-    """
-    gmf_set = djm.ForeignKey('GmfSet')
-    imt = djm.TextField(choices=IMT_CHOICES)
-    sa_period = djm.FloatField(null=True)
-    sa_damping = djm.FloatField(null=True)
-    location = djm.PointField(srid=DEFAULT_SRID)
-    gmvs = fields.FloatArrayField()
-    rupture_ids = fields.IntArrayField()
-    result_grp_ordinal = djm.IntegerField()
-
-    objects = djm.GeoManager()
-
-    class Meta:
-        db_table = 'hzrdr\".\"gmf'
-
-
 class GmfAgg(djm.Model):
     """
     Ground Motion Field: A collection of ground motion values and their
     respective geographical locations.
     """
-    gmf_collection = djm.ForeignKey('GmfCollection')
+    gmf = djm.ForeignKey('Gmf')
     ses = djm.ForeignKey('SES', null=True)
     imt = djm.TextField(choices=IMT_CHOICES)
     sa_period = djm.FloatField(null=True)
@@ -1912,7 +1884,7 @@ class GmfAgg(djm.Model):
     objects = djm.GeoManager()
 
     class Meta:
-        db_table = 'hzrdr\".\"gmf_agg'
+        db_table = 'hzrdr\".\"gmf_data'
 
 
 def get_gmvs_per_site(output, imt=None, sort=sorted):
@@ -1940,7 +1912,7 @@ def get_gmvs_per_site(output, imt=None, sort=sorted):
         imts = [parse_imt(imt)]
     for imt, sa_period, sa_damping in imts:
         for gmf in GmfAgg.objects.filter(
-                gmf_collection=coll, imt=imt,
+                gmf=coll, imt=imt,
                 sa_period=sa_period, sa_damping=sa_damping).\
                 order_by('site'):
             yield sort(gmf.gmvs)
@@ -1970,7 +1942,7 @@ def get_gmfs_scenario(output, imt=None):
     for imt, sa_period, sa_damping in imts:
         nodes = collections.defaultdict(list)  # realization -> gmf_nodes
         for gmf in GmfAgg.objects.filter(
-                gmf_collection=coll, imt=imt,
+                gmf=coll, imt=imt,
                 sa_period=sa_period, sa_damping=sa_damping):
             for i, gmv in enumerate(gmf.gmvs):  # i is the realization index
                 nodes[i].append(_GroundMotionFieldNode(gmv, gmf.site.location))
@@ -2124,6 +2096,21 @@ class LossFraction(djm.Model):
     class Meta:
         db_table = 'riskr\".\"loss_fraction'
 
+    def __iter__(self):
+        return iter(self.lossfractiondata_set.all())
+
+    @property
+    def output_hash(self):
+        """
+        :returns:
+            a (db-sequence independent) tuple that identifies this output among
+            which the ones created in the same calculation
+        """
+        return (self.output.output_type,
+                self.output.hazard_metadata,
+                self.statistics, self.quantile,
+                self.variable, self.poe, self.loss_type)
+
     def display_value(self, value, rc):
         """
         Converts `value` in a form that is best suited to be
@@ -2272,6 +2259,17 @@ class LossFractionData(djm.Model):
     class Meta:
         db_table = 'riskr\".\"loss_fraction_data'
 
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.loss_fraction.output_hash + (self.location, self.value)
+
+    def assertAlmostEqual(self, data):
+        return risk_almost_equal(
+            self, data, operator.attrgetter('absolute_loss'))
+
 
 class LossMap(djm.Model):
     '''
@@ -2279,7 +2277,7 @@ class LossMap(djm.Model):
     '''
 
     output = djm.OneToOneField("Output", related_name="loss_map")
-    hazard_output = djm.OneToOneField("Output", related_name="risk_loss_map")
+    hazard_output = djm.ForeignKey("Output", related_name="risk_loss_maps")
     insured = djm.BooleanField(default=False)
     poe = djm.FloatField(null=True)
     statistics = djm.TextField(null=True, choices=STAT_CHOICES)
@@ -2288,6 +2286,21 @@ class LossMap(djm.Model):
 
     class Meta:
         db_table = 'riskr\".\"loss_map'
+
+    def __iter__(self):
+        return iter(self.lossmapdata_set.all())
+
+    @property
+    def output_hash(self):
+        """
+        :returns:
+            a (db-sequence independent) tuple that identifies this output among
+            which the ones created in the same calculation
+        """
+        return (self.output.output_type,
+                self.output.hazard_metadata,
+                self.statistics, self.quantile,
+                self.insured, self.poe, self.loss_type)
 
 
 class LossMapData(djm.Model):
@@ -2305,6 +2318,17 @@ class LossMapData(djm.Model):
     class Meta:
         db_table = 'riskr\".\"loss_map_data'
 
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.loss_map.output_hash + (self.asset_ref,)
+
+    def assertAlmostEqual(self, data):
+        return risk_almost_equal(
+            self, data, operator.attrgetter('value', 'stddev'))
+
 
 class AggregateLoss(djm.Model):
     output = djm.OneToOneField("Output", related_name="aggregate_loss")
@@ -2316,6 +2340,30 @@ class AggregateLoss(djm.Model):
     class Meta:
         db_table = 'riskr\".\"aggregate_loss'
 
+    @property
+    def output_hash(self):
+        """
+        :returns:
+            a (db-sequence independent) tuple that identifies this output among
+            which the ones created in the same calculation
+        """
+        return (self.output.output_type,
+                self.output.hazard_metadata,
+                self.insured,
+                self.mean, self.std_dev,
+                self.loss_type)
+
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.output_hash
+
+    def assertAlmostEqual(self, data):
+        return risk_almost_equal(
+            self, data, lambda x: operator.attrgetter('mean', 'std_dev'))
+
 
 class LossCurve(djm.Model):
     '''
@@ -2323,7 +2371,7 @@ class LossCurve(djm.Model):
     '''
 
     output = djm.OneToOneField("Output", related_name="loss_curve")
-    hazard_output = djm.OneToOneField("Output", related_name="risk_loss_curve")
+    hazard_output = djm.ForeignKey("Output", related_name="risk_loss_curves")
     aggregate = djm.BooleanField(default=False)
     insured = djm.BooleanField(default=False)
 
@@ -2335,6 +2383,24 @@ class LossCurve(djm.Model):
 
     class Meta:
         db_table = 'riskr\".\"loss_curve'
+
+    def __iter__(self):
+        if self.aggregate:
+            return iter([self.aggregatelosscurvedata])
+        else:
+            return iter(self.losscurvedata_set.all())
+
+    @property
+    def output_hash(self):
+        """
+        :returns:
+            a (db-sequence independent) tuple that identifies this output among
+            which the ones created in the same calculation
+        """
+        return (self.output.output_type,
+                self.output.hazard_metadata,
+                self.statistics, self.quantile,
+                self.aggregate, self.insured, self.loss_type)
 
 
 class LossCurveData(djm.Model):
@@ -2361,6 +2427,23 @@ class LossCurveData(djm.Model):
     def average_loss(self):
         return self.average_loss_ratio * self.asset_value
 
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.loss_curve.output_hash + (self.asset_ref,)
+
+    def assertAlmostEqual(self, data):
+        if self.losses[self.losses > 0].any():
+            poes = interpolate.interp1d(
+                self.losses, self.poes,
+                bounds_error=False, fill_value=0)(data.losses)
+        else:
+            poes = numpy.zeros(len(data.poes))
+
+        return risk_almost_equal(self.poes, poes)
+
 
 class AggregateLossCurveData(djm.Model):
     '''
@@ -2375,6 +2458,23 @@ class AggregateLossCurveData(djm.Model):
     class Meta:
         db_table = 'riskr\".\"aggregate_loss_curve_data'
 
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.loss_curve.output_hash
+
+    def assertAlmostEqual(self, data):
+        if self.losses[self.losses > 0].any():
+            poes = interpolate.interp1d(
+                self.losses, self.poes,
+                bounds_error=False, fill_value=0)(data.losses)
+        else:
+            poes = numpy.zeros(len(data.poes))
+
+        return risk_almost_equal(self.poes, poes)
+
 
 class EventLoss(djm.Model):
     """
@@ -2383,13 +2483,47 @@ class EventLoss(djm.Model):
 
     #: Foreign key to an :class:`openquake.engine.db.models.Output`
     #: object with output_type == event_loss
-    output = djm.ForeignKey('Output', related_name="event_loss")
-    rupture = djm.ForeignKey('SESRupture')
-    aggregate_loss = djm.FloatField()
+    output = djm.OneToOneField('Output', related_name="event_loss")
+    hazard_output = djm.ForeignKey(
+        "Output", related_name="risk_event_loss_tables")
     loss_type = djm.TextField(choices=zip(LOSS_TYPES, LOSS_TYPES))
 
     class Meta:
         db_table = 'riskr\".\"event_loss'
+
+    def __iter__(self):
+        return iter(self.eventlossdata_set.all().order_by('-aggregate_loss'))
+
+    @property
+    def output_hash(self):
+        """
+        :returns:
+            a (db-sequence independent) tuple that identifies this output among
+            which the ones created in the same calculation
+        """
+        # FIXME(lp) this is not db-sequence independent
+        return (self.output.output_type, self.output.hazard_metadata,
+                self.loss_type)
+
+
+class EventLossData(djm.Model):
+    event_loss = djm.ForeignKey(EventLoss)
+    rupture = djm.ForeignKey('SESRupture')
+    aggregate_loss = djm.FloatField()
+
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.event_loss.output_hash + (self.rupture_id,)
+
+    def assertAlmostEqual(self, data):
+        return risk_almost_equal(
+            self, data, operator.attrgetter('aggregate_loss'))
+
+    class Meta:
+        db_table = 'riskr\".\"event_loss_data'
 
 
 class BCRDistribution(djm.Model):
@@ -2398,11 +2532,23 @@ class BCRDistribution(djm.Model):
     '''
 
     output = djm.OneToOneField("Output", related_name="bcr_distribution")
-    hazard_output = djm.OneToOneField("Output")
+    hazard_output = djm.ForeignKey(
+        "Output", related_name="risk_bcr_distribution")
     loss_type = djm.TextField(choices=zip(LOSS_TYPES, LOSS_TYPES))
 
     class Meta:
         db_table = 'riskr\".\"bcr_distribution'
+
+    @property
+    def output_hash(self):
+        """
+        :returns:
+            a (db-sequence independent) tuple that identifies this output among
+            which the ones created in the same calculation
+        """
+        return (self.output.output_type,
+                self.output.hazard_metadata,
+                self.loss_type)
 
 
 class BCRDistributionData(djm.Model):
@@ -2419,6 +2565,20 @@ class BCRDistributionData(djm.Model):
 
     class Meta:
         db_table = 'riskr\".\"bcr_distribution_data'
+
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.bcr_distribution.output_hash + (self.asset_ref,)
+
+    def assertAlmostEqual(self, data):
+        return risk_almost_equal(
+            self, data,
+            operator.attrgetter('average_annual_loss_original',
+                                'average_loss_retrofitted',
+                                'bcr'))
 
 
 class DmgState(djm.Model):
@@ -2445,6 +2605,32 @@ class DmgDistPerAsset(djm.Model):
     class Meta:
         db_table = 'riskr\".\"dmg_dist_per_asset'
 
+    @property
+    def output_hash(self):
+        """
+        :returns:
+            a (db-sequence independent) tuple that identifies this output among
+            which the ones created in the same calculation
+        """
+        return (self.output.output_type,
+                self.dmg_state.dmg_state, self.exposure_data.asset_ref)
+
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.output_hash
+
+    def assertAlmostEqual(self, data):
+        return risk_almost_equal(
+            self, data, operator.attrgetter('mean', 'stddev'))
+
+    @property
+    def output(self):
+        return self.dmg_state.rc_calculation.oqjob_set.all()[0].output_set.get(
+            output_type="dmg_dist_per_asset")
+
 
 class DmgDistPerTaxonomy(djm.Model):
     """Holds the actual data for damage distributions per taxonomy."""
@@ -2456,6 +2642,32 @@ class DmgDistPerTaxonomy(djm.Model):
 
     class Meta:
         db_table = 'riskr\".\"dmg_dist_per_taxonomy'
+
+    @property
+    def output(self):
+        return self.dmg_state.rc_calculation.oqjob_set.all()[0].output_set.get(
+            output_type="dmg_dist_per_taxonomy")
+
+    @property
+    def output_hash(self):
+        """
+        :returns:
+            a (db-sequence independent) tuple that identifies this output among
+            which the ones created in the same calculation
+        """
+        return (self.output.output_type,
+                self.dmg_state.dmg_state, self.taxonomy)
+
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.output_hash
+
+    def assertAlmostEqual(self, data):
+        return risk_almost_equal(
+            self, data, operator.attrgetter('mean', 'stddev'))
 
 
 class DmgDistTotal(djm.Model):
@@ -2469,6 +2681,32 @@ class DmgDistTotal(djm.Model):
 
     class Meta:
         db_table = 'riskr\".\"dmg_dist_total'
+
+    @property
+    def output(self):
+        return self.dmg_state.rc_calculation.oqjob_set.all()[0].output_set.get(
+            output_type="dmg_dist_total")
+
+    @property
+    def output_hash(self):
+        """
+        :returns:
+            a (db-sequence independent) tuple that identifies this output among
+            which the ones created in the same calculation
+        """
+        return (self.output.output_type, self.dmg_state.dmg_state, )
+
+    @property
+    def data_hash(self):
+        """
+        A db-sequence independent tuple that identifies this output
+        """
+        return self.output_hash
+
+    def assertAlmostEqual(self, data):
+        return risk_almost_equal(
+            self, data, operator.attrgetter('mean', 'stddev'))
+
 
 ## Tables in the 'riski' schema.
 
@@ -2508,8 +2746,24 @@ class ExposureModel(djm.Model):
         return ExposureData.objects.taxonomies_contained_in(
             self.id, region_constraint)
 
-    def unit(self, cost_type):
-        return self.costtype_set.get(name=cost_type).unit
+    def unit(self, loss_type):
+        if loss_type == "fatalities":
+            return "people"
+        else:
+            return self.costtype_set.get(name=loss_type).unit
+
+    def missing_occupants(self):
+        """
+        :returns:
+            True if the exposure model does not include information about
+            occupants for any of the assets
+        """
+        if self.category == "population":
+            return self.exposuredata_set.filter(
+                number_of_units__isnull=True).exists()
+        else:
+            return self.exposuredata_set.filter(
+                occupancy__isnull=True).exists()
 
 
 class CostType(djm.Model):
@@ -2554,34 +2808,98 @@ class AssetManager(djm.GeoManager):
     """
     Asset manager
     """
+
     def get_asset_chunk(self, rc, taxonomy, offset, size):
         """
-        :returns the asset ids (ordered by location) contained in
-        `region_constraint`(embedded in the risk calculation `rc`) of
-        `taxonomy` associated with the
-        `openquake.engine.db.models.ExposureModel` associated with
-        `rc`.
+        :returns:
 
-        It also add an annotation to each ExposureData object to provide the
-        right occupants value for the risk calculation given in input
+           a list of instances of
+           :class:`openquake.engine.db.models.ExposureData` (ordered
+           by location) contained in `region_constraint`(embedded in
+           the risk calculation `rc`) of `taxonomy` associated with
+           the `openquake.engine.db.models.ExposureModel` associated
+           with `rc`.
+
+           It also add an annotation to each ExposureData object to provide the
+           occupants value for the risk calculation given in input and the cost
+           for each cost type considered in `rc`
         """
 
-        # default query arguments: the current exposure model, the
-        # given taxonomy and the asset region constraint
+        query, args = self._get_asset_chunk_query_args(
+            rc, taxonomy, offset, size)
+        return list(self.raw(query, args))
+
+    def _get_asset_chunk_query_args(self, rc, taxonomy, offset, size):
+        """
+        Build a parametric query string and the corresponding args for
+        #get_asset_chunk
+        """
         args = (rc.exposure_model.id, taxonomy,
                 "SRID=4326; %s" % rc.region_constraint.wkt)
 
-        # if time_event is not specified we compute the number of
-        # occupants by averaging the occupancy data for each asset.
-        if rc.time_event is None:
-            occupants = "AVG(riski.occupancy.occupants)"
-            occupants_cond = "1 = 1"
-        else:
-            occupants = "riski.occupancy.occupants"
-            occupants_cond = "riski.occupancy.period = %s"
-            args += (rc.time_event,)
-        args += (size, offset)
+        people_field, occupants_cond, occupancy_join, occupants_args = (
+            self._get_people_query_helper(
+                rc.exposure_model.category, rc.time_event))
 
+        args += occupants_args + (size, offset)
+
+        cost_type_fields, cost_type_joins = self._get_cost_types_query_helper(
+            rc.exposure_model.costtype_set.all())
+
+        query = """
+            SELECT riski.exposure_data.*,
+                   {people_field} AS people,
+                   {costs}
+            FROM riski.exposure_data
+            {occupancy_join}
+            ON riski.exposure_data.id = riski.occupancy.exposure_data_id
+            {costs_join}
+            WHERE exposure_model_id = %s AND
+                  taxonomy = %s AND
+                  ST_COVERS(ST_GeographyFromText(%s), site) AND
+                  {occupants_cond}
+            GROUP BY riski.exposure_data.id
+            ORDER BY ST_X(geometry(site)), ST_Y(geometry(site))
+            LIMIT %s OFFSET %s
+            """.format(people_field=people_field,
+                       occupants_cond=occupants_cond,
+                       costs=cost_type_fields,
+                       costs_join=cost_type_joins,
+                       occupancy_join=occupancy_join)
+
+        return query, args
+
+    def _get_people_query_helper(self, category, time_event):
+        """
+        Support function for _get_asset_chunk_query_args
+        """
+        args = ()
+        # if the exposure model is of type "population" we extract the
+        # data from the `number_of_units` field
+        if category == "population":
+            occupants_field = "number_of_units"
+            occupants_cond = "1 = 1"
+            occupancy_join = ""
+        else:
+            # otherwise we will "left join" the occupancy table
+            occupancy_join = "LEFT JOIN riski.occupancy"
+            occupants_field = "AVG(riski.occupancy.occupants::float)"
+
+            # and the time_event is not specified we compute the
+            # number of occupants by averaging the occupancy data for
+            # each asset, otherwise we get the unique proper occupants
+            # value.
+            if time_event is None:
+                occupants_cond = "1 = 1"
+            else:
+                args += (time_event,)
+                occupants_cond = "riski.occupancy.period = %s"
+        return occupants_field, occupants_cond, occupancy_join, args
+
+    def _get_cost_types_query_helper(self, cost_types):
+        """
+        Support function for _get_asset_chunk_query_args
+        """
         # For each cost type associated with the exposure model we
         # join the `cost` table to the current queryset in order to
         # lookup for a cost value for each asset.
@@ -2592,46 +2910,28 @@ class AssetManager(djm.GeoManager):
         costs = []
         costs_join = ""
 
-        for cost_type in rc.exposure_model.costtype_set.all():
+        for cost_type in cost_types:
             # here the max value is irrelevant as we are sureto join
             # against one row
-            costs.append("max(%s.converted_cost) AS %s " % (cost_type.name,
-                                                            cost_type.name))
+            costs.append("max(%s.converted_cost) AS %s" % (cost_type.name,
+                                                           cost_type.name))
             costs.append(
-                "max(%s.converted_retrofitted_cost) AS retrofitted_%s " % (
+                "max(%s.converted_retrofitted_cost) AS retrofitted_%s" % (
                     cost_type.name, cost_type.name))
             costs.append(
-                "max(%s.deductible_absolute) AS deductible_%s " % (
+                "max(%s.deductible_absolute) AS deductible_%s" % (
                     cost_type.name, cost_type.name))
             costs.append(
-                "max(%s.insurance_limit_absolute) AS insurance_limit_%s " % (
+                "max(%s.insurance_limit_absolute) AS insurance_limit_%s" % (
                     cost_type.name, cost_type.name))
 
             costs_join += """
             LEFT JOIN riski.cost AS %(name)s
             ON %(name)s.cost_type_id = '%(id)s' AND
-            %(name)s.exposure_data_id = riski.exposure_data.id """ % dict(
+            %(name)s.exposure_data_id = riski.exposure_data.id""" % dict(
                 name=cost_type.name, id=cost_type.id)
 
-        query = """
-            SELECT riski.exposure_data.*,
-                   {occupants} AS occupancy,
-                   {costs}
-            FROM riski.exposure_data
-            LEFT JOIN riski.occupancy
-            ON riski.exposure_data.id = riski.occupancy.exposure_data_id
-            {costs_join}
-            WHERE exposure_model_id = %s AND
-                  taxonomy = %s AND
-                  ST_COVERS(ST_GeographyFromText(%s), site) AND
-                  {occupants_cond}
-            GROUP BY riski.exposure_data.id
-            ORDER BY ST_X(geometry(site)), ST_Y(geometry(site))
-            LIMIT %s OFFSET %s
-            """.format(occupants=occupants, occupants_cond=occupants_cond,
-                       costs=", ".join(costs), costs_join=costs_join)
-
-        return list(self.raw(query, args))
+        return ", ".join(costs), costs_join
 
     def taxonomies_contained_in(self, exposure_model_id, region_constraint):
         """
@@ -2665,7 +2965,7 @@ class ExposureData(djm.Model):
     taxonomy = djm.TextField()
     site = djm.PointField(geography=True)
 
-    units = djm.FloatField(
+    number_of_units = djm.FloatField(
         null=True, help_text="number of assets, people, etc.")
     area = djm.FloatField(null=True)
 
@@ -2726,6 +3026,9 @@ class ExposureData(djm.Model):
         each loss type, we rely on the fact that an annotation on the
         asset named `loss_type` is present.
         """
+        if loss_type == "fatalities":
+            return getattr(self, "people")
+
         return getattr(self, loss_type)
 
     def retrofitted(self, loss_type):
