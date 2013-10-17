@@ -59,7 +59,6 @@ DEFAULT_GMF_REALIZATIONS = 1
 # NB: beware of large caches; GmfRupture rows contain large arrays
 inserter = writer.CacheInserter(models.GmfRupture, 10)
 
-
 # Disabling pylint for 'Too many local variables'
 # pylint: disable=R0914
 @tasks.momotask
@@ -200,7 +199,6 @@ def _save_gmf(rupture, gmf_dict, nsites):
     Helper method to save computed GMF data to the database.
     """
     for imt, gmvs in gmf_dict.iteritems():
-        gmvs = list(gmvs.reshape(nsites))
         if all(gmv < 1E-6 for gmv in gmvs):
             return
         sa_period = None
@@ -215,7 +213,7 @@ def _save_gmf(rupture, gmf_dict, nsites):
                 imt=imt_name,
                 sa_period=sa_period,
                 sa_damping=sa_damping,
-                gmvs=gmvs))
+                gmvs=list(gmvs.reshape(nsites))))
     inserter.flush()
 
 
