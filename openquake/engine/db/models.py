@@ -2115,6 +2115,19 @@ class _Point(object):
         self.y = y
 
 
+class GmfRupture(djm.Model):
+    """
+    """
+    rupture = djm.OneToOneField('SESRupture', related_name="gmf")
+    gmvs = fields.FloatArrayField()
+    imt = djm.TextField(choices=IMT_CHOICES)
+    sa_period = djm.FloatField(null=True)
+    sa_damping = djm.FloatField(null=True)
+
+    class Meta:
+        db_table = 'hzrdr\".\"gmf_rupture'
+
+
 class Gmf(djm.Model):
     """
     A collection of ground motion field (GMF) sets for a given logic tree

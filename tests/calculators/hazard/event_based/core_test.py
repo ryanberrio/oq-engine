@@ -54,7 +54,7 @@ class EventBasedHazardCalculatorTestCase(unittest.TestCase):
 
     @unittest.skip  # temporarily skipped
     def test_donot_save_trivial_gmf(self):
-        ses = mock.Mock()
+        rupture = mock.Mock()
 
         # setup two ground motion fields on a region made by three
         # locations. On the first two locations the values are
@@ -63,23 +63,22 @@ class EventBasedHazardCalculatorTestCase(unittest.TestCase):
         gmvs = numpy.matrix([[1., 1.],
                              [1., 1.],
                              [0., 0.]])
-        gmf_dict = {PGA: dict(rupture_ids=[1, 2], gmvs=gmvs)}
+        gmf_dict = {PGA: gmvs}
         points = make_mock_points(3)
         with helpers.patch('openquake.engine.writer.CacheInserter') as m:
-            core._save_gmfs(
-                ses, gmf_dict, points)
+            core._save_gmf(rupture, gmf_dict, points)
             self.assertEqual(2, m.add.call_count)
 
     @unittest.skip  # temporarily skipped
     def test_save_only_nonzero_gmvs(self):
-        ses = mock.Mock()
+        rupture = mock.Mock()
 
         gmvs = numpy.matrix([[0.0, 0, 1]])
-        gmf_dict = {PGA: dict(rupture_ids=[1, 2, 3], gmvs=gmvs)}
+        gmf_dict = {PGA: gmvs}
 
         points = make_mock_points(1)
         with helpers.patch('openquake.engine.writer.CacheInserter') as m:
-            core._save_gmfs(ses, gmf_dict, points)
+            core._save_gmf(rupture, gmf_dict, points)
             self.assertEqual(1, m.add.call_count)
 
     def test_initialize_ses_db_records(self):
@@ -220,7 +219,7 @@ class EventBasedHazardCalculatorTestCase(unittest.TestCase):
             ses_mock = calc.stochastic.stochastic_event_set_poissonian
             gmf_mock = calc.gmf.ground_motion_fields
             save_rup_mock = core._save_ses_ruptures
-            save_gmf_mock = core._save_gmfs
+            save_gmf_mock = core._save_gmf
 
             # run the calculation in process (to easy debugging)
             # and check the outputs

@@ -592,6 +592,25 @@ CREATE TABLE hzrdr.ses_rupture (
 ) TABLESPACE hzrdr_ts;
 
 
+CREATE TABLE hzrdr.gmf_rupture (
+    id SERIAL PRIMARY KEY,
+    rupture_id INTEGER,  -- FK to ses_rupture.id
+    gmvs FLOAT[] NOT NULL,
+    imt VARCHAR NOT NULL,
+        CONSTRAINT hazard_curve_imt
+        CHECK(imt in ('PGA', 'PGV', 'PGD', 'SA', 'IA', 'RSD', 'MMI')),
+    sa_period float,
+        CONSTRAINT gmf_sa_period
+        CHECK(
+            ((imt = 'SA') AND (sa_period IS NOT NULL))
+            OR ((imt != 'SA') AND (sa_period IS NULL))),
+    sa_damping float,
+        CONSTRAINT gmf_sa_damping
+        CHECK(
+            ((imt = 'SA') AND (sa_damping IS NOT NULL))
+            OR ((imt != 'SA') AND (sa_damping IS NULL)))
+) TABLESPACE hzrdr_ts;
+
 CREATE TABLE hzrdr.gmf (
     id SERIAL PRIMARY KEY,
     output_id INTEGER NOT NULL,  -- FK to output.id
@@ -1359,6 +1378,13 @@ ALTER TABLE hzrdi.hazard_site
 ADD CONSTRAINT hzrdi_hazard_site_hazard_calculation_fk
 FOREIGN KEY (hazard_calculation_id)
 REFERENCES uiapi.hazard_calculation(id)
+ON DELETE CASCADE;
+
+-- hzrdr.gmf_rupture to hzrdr.ses_rupture FK
+ALTER TABLE hzrdr.gmf_rupture
+ADD CONSTRAINT hzrdr_gmf_rupture_ses_rupture_fk
+FOREIGN KEY (rupture_id)
+REFERENCES hzrdr.ses_rupture(id)
 ON DELETE CASCADE;
 
 -- hzrdr.gmf_data to hzrdi.hazard_site FK
