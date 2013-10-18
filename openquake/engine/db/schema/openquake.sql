@@ -591,10 +591,10 @@ CREATE TABLE hzrdr.ses_rupture (
     tag VARCHAR
 ) TABLESPACE hzrdr_ts;
 
-
+-- TODO: remove that damned imt fields??
 CREATE TABLE hzrdr.gmf_rupture (
     id SERIAL PRIMARY KEY,
-    rupture_id INTEGER,  -- FK to ses_rupture.id
+    rupture_id INTEGER NOT NULL,  -- FK to ses_rupture.id
     gmvs FLOAT[] NOT NULL,
     imt VARCHAR NOT NULL,
         CONSTRAINT hazard_curve_imt
