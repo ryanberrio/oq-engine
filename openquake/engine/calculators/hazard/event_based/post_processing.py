@@ -37,8 +37,6 @@ P * R * M = 100,000 * 1,000 * 10 = 1 Billion queries, in the extreme case
 
 This could be the target for future optimizations.
 """
-
-import itertools
 import numpy
 
 from openquake.engine.db import models
@@ -77,7 +75,6 @@ def gmf_to_hazard_curve_arg_gen(job):
         :class:`openquake.engine.db.models.OqJob` instance.
     """
     hc = job.hazard_calculation
-    sites = models.HazardSite.objects.filter(hazard_calculation=hc)
 
     lt_realizations = models.LtRealization.objects.filter(
         hazard_calculation=hc.id)
@@ -104,16 +101,15 @@ def gmf_to_hazard_curve_arg_gen(job):
                 sa_period=sa_period,
                 sa_damping=sa_damping)
 
-            for site in sites:
-                yield (job.id, site, lt_rlz.id, imt, imls, hc_coll.id,
-                       invest_time, duration, sa_period, sa_damping)
+            yield (job.id, lt_rlz.id, imt, imls, hc_coll.id,
+                   invest_time, duration, sa_period, sa_damping)
 
 
 # Disabling "Unused argument 'job_id'" (this parameter is required by @oqtask):
 # pylint: disable=W0613
 @tasks.momotask
 def gmf_to_hazard_curve_task(
-        mon, job_id, site, lt_rlz_id, imt, imls, hc_coll_id,
+        mon, job_id, lt_rlz_id, imt, imls, hc_coll_id,
         invest_time, duration, sa_period=None, sa_damping=None):
     """
     For a given job, site, realization, and IMT, compute a hazard curve and
@@ -155,20 +151,22 @@ def gmf_to_hazard_curve_task(
         Spectral Acceleration damping. Used only with ``imt`` of 'SA'.
     """
     lt_rlz = models.LtRealization.objects.get(id=lt_rlz_id)
-    gmfs = models.GmfData.objects.filter(
-        gmf__lt_realization=lt_rlz_id,
-        imt=imt,
-        sa_period=sa_period,
-        sa_damping=sa_damping,
-        site=site).order_by('ses')
-    gmvs = list(itertools.chain(*(g.gmvs for g in gmfs)))
+    hc = models.HazardCalculation.objects.get(oqjob=job_id)
 
-    # Compute the hazard curve PoEs:
-    hc_poes = gmvs_to_haz_curve(gmvs, imls, invest_time, duration)
-    # Save:
-    models.HazardCurveData.objects.create(
-        hazard_curve_id=hc_coll_id, poes=hc_poes, location=site.location,
-        weight=lt_rlz.weight)
+    # this is a BIG list
+    gmf_ruptures = list(models.GmfRupture.objects.filter(
+        rupture__ses__ses_collection__lt_realization=lt_rlz,
+        imt=imt, sa_period=sa_period, sa_damping=sa_damping))
+
+    for i, site in enumerate(hc.site_collection):
+        with mon.copy('convert gmvs->hazard_curve'):
+            gmvs = [gr.gmvs[i] for gr in gmf_ruptures]
+            hc_poes = gmvs_to_haz_curve(gmvs, imls, invest_time, duration)
+        with mon.copy('saving the hazard curve'):
+            # TODO: try the cache inserter here
+            models.HazardCurveData.objects.create(
+                hazard_curve_id=hc_coll_id, poes=hc_poes,
+                location=site.location, weight=lt_rlz.weight)
 
 
 def gmvs_to_haz_curve(gmvs, imls, invest_time, duration):

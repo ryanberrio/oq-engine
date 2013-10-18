@@ -2118,7 +2118,7 @@ class _Point(object):
 class GmfRupture(djm.Model):
     """
     """
-    rupture = djm.OneToOneField('SESRupture', related_name="gmf")
+    rupture = djm.ForeignKey('SESRupture')
     gmvs = fields.FloatArrayField()
     imt = djm.TextField(choices=IMT_CHOICES)
     sa_period = djm.FloatField(null=True)
