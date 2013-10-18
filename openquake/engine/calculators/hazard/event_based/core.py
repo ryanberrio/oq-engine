@@ -59,10 +59,11 @@ DEFAULT_GMF_REALIZATIONS = 1
 # NB: beware of large caches; GmfRupture rows contain large arrays
 inserter = writer.CacheInserter(models.GmfRupture, 10)
 
+
 # Disabling pylint for 'Too many local variables'
 # pylint: disable=R0914
 @tasks.momotask
-def compute_and_save_ses(task_mon, job_id, src_ids, ses, task_seed):
+def compute_and_save_ses(task_mon, job_id, src_id, lt_rlz, lt_seed, ses_seeds):
     """
     Celery task for the stochastic event set calculator.
 
@@ -77,16 +78,18 @@ def compute_and_save_ses(task_mon, job_id, src_ids, ses, task_seed):
 
     :param int job_id:
         ID of the currently running job.
-    :param src_ids:
-        List of ids of parsed source models from which we will generate
+    :param src_id:
+        Id of a parsed source model from which we will generate
         stochastic event sets/ruptures.
-    :param ses:
-        Stochastic Event Set object
-    :param int task_seed:
-        Value for seeding numpy/scipy in the computation of stochastic event
-        sets and ground motion fields.
+    :param lt_rlz:
+        Logic Tree Realization object
+    :param lt_seed:
+        Integer seed for the logic tree processor
+    :param ses_seeds:
+        Values for seeding numpy/scipy in the computation of stochastic event
+        sets. It is an array of `ses_per_logic_tree_path` integers.
     """
-    numpy.random.seed(task_seed)
+    numpy.random.seed(lt_seed)
 
     hc = models.HazardCalculation.objects.get(oqjob=job_id)
 
@@ -98,16 +101,14 @@ def compute_and_save_ses(task_mon, job_id, src_ids, ses, task_seed):
             ordinal=None)
 
     # preparing sources
-
     ltp = logictree.LogicTreeProcessor(hc.id)
-    lt_rlz = ses.ses_collection.lt_realization
-
     apply_uncertainties = ltp.parse_source_model_logictree_path(
         lt_rlz.sm_lt_path)
 
-    source_iter = haz_general.gen_sources(
-        src_ids, apply_uncertainties, hc.rupture_mesh_spacing,
-        hc.width_of_mfd_bin, hc.area_source_discretization)
+    with task_mon.copy('reading source'):
+        [src] = haz_general.gen_sources(
+            [src_id], apply_uncertainties, hc.rupture_mesh_spacing,
+            hc.width_of_mfd_bin, hc.area_source_discretization)
 
     src_filter = filters.source_site_distance_filter(hc.maximum_distance)
     rup_filter = filters.rupture_site_distance_filter(hc.maximum_distance)
@@ -118,13 +119,19 @@ def compute_and_save_ses(task_mon, job_id, src_ids, ses, task_seed):
     # Compute and save stochastic event sets
     # For each rupture generated, we can optionally calculate a GMF
     with task_mon.copy('computing ses'):
-        ruptures = []
-        for src in source_iter:
+        all_ses = models.SES.objects.filter(
+            ses_collection__lt_realization=lt_rlz,
+            ordinal__isnull=False).order_by('ordinal')
+        for ses, seed in zip(all_ses, ses_seeds):
+            numpy.random.seed(seed)
+            ruptures = []
             # make copies of the hazardlib ruptures (which may contain
             # duplicates)
-            rupts = map(copy.copy, stochastic.stochastic_event_set_poissonian(
-                        [src], hc.investigation_time, site_collection,
-                        src_filter, rup_filter))
+            rupts = map(
+                copy.copy,
+                stochastic.stochastic_event_set_poissonian(
+                    [src], hc.investigation_time, site_collection,
+                    src_filter, rup_filter))
             # set the tag for each copy
             for i, r in enumerate(rupts):
                 r.tag = 'rlz=%02d|ses=%04d|src=%s|i=%03d' % (
@@ -138,7 +145,7 @@ def compute_and_save_ses(task_mon, job_id, src_ids, ses, task_seed):
 
 
 @tasks.momotask
-def compute_and_save_gmf_task(task_mon, job_id, gsims, rupture):
+def compute_and_save_gmf(task_mon, job_id, gsims, rupture):
     """
     """
     with task_mon.copy('reading calculation and site collection'):
@@ -235,22 +242,17 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
         rnd = random.Random()
         rnd.seed(hc.random_seed)
         realizations = self._get_realizations()
-
         for lt_rlz in realizations:
             sources = models.SourceProgress.objects\
                 .filter(is_complete=False, lt_realization=lt_rlz)\
                 .order_by('id')\
                 .values_list('parsed_source_id', flat=True)
-
-            all_ses = list(models.SES.objects.filter(
-                           ses_collection__lt_realization=lt_rlz,
-                           ordinal__isnull=False).order_by('ordinal'))
-
-            for ses in all_ses:
-                for src_id in sources:
-                    task_seed = rnd.randint(0, models.MAX_SINT_32)
-                    task_args = (self.job.id, [src_id], ses, task_seed)
-                    yield task_args
+            lt_seed = rnd.randint(0, models.MAX_SINT_32)
+            for src_id in sources:
+                ses_seeds = [rnd.randint(0, models.MAX_SINT_32) for _ in
+                             range(self.hc.ses_per_logic_tree_path)]
+                task_args = (self.job.id, src_id, lt_rlz, lt_seed, ses_seeds)
+                yield task_args
 
     def compute_and_save_gmf_arg_gen(self):
         """
@@ -268,7 +270,7 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
         Run compute_and_save_ses in parallel.
         """
         self.parallelize(self.core_calc_task, self.task_arg_gen())
-        self.parallelize(compute_and_save_gmf_task,
+        self.parallelize(compute_and_save_gmf,
                          self.compute_and_save_gmf_arg_gen())
 
     def initialize_ses_db_records(self, lt_rlz):
