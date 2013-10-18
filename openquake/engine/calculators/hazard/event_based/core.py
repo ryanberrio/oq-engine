@@ -63,7 +63,7 @@ inserter = writer.CacheInserter(models.GmfRupture, 10)
 # Disabling pylint for 'Too many local variables'
 # pylint: disable=R0914
 @tasks.momotask
-def compute_and_save_ses(task_mon, job_id, src_id, lt_rlz, lt_seed, ses_seeds):
+def compute_and_save_ses(task_mon, job_id, src_id, ses, seed):
     """
     Celery task for the stochastic event set calculator.
 
@@ -83,15 +83,14 @@ def compute_and_save_ses(task_mon, job_id, src_id, lt_rlz, lt_seed, ses_seeds):
         stochastic event sets/ruptures.
     :param lt_rlz:
         Logic Tree Realization object
-    :param lt_seed:
-        Integer seed for the logic tree processor
-    :param ses_seeds:
-        Values for seeding numpy/scipy in the computation of stochastic event
-        sets. It is an array of `ses_per_logic_tree_path` integers.
+    :param seed:
+        Value for seeding numpy/scipy in the computation of stochastic event
+        sets.
     """
-    numpy.random.seed(lt_seed)
+    numpy.random.seed(seed)
 
     hc = models.HazardCalculation.objects.get(oqjob=job_id)
+    lt_rlz = ses.ses_collection.lt_realization
 
     # complete_logic_tree_ses flag
     cmplt_lt_ses = None
@@ -118,34 +117,26 @@ def compute_and_save_ses(task_mon, job_id, src_id, lt_rlz, lt_seed, ses_seeds):
 
     # Compute and save stochastic event sets
     # For each rupture generated, we can optionally calculate a GMF
-    with task_mon.copy('computing ses'):
-        all_ses = models.SES.objects.filter(
-            ses_collection__lt_realization=lt_rlz,
-            ordinal__isnull=False).order_by('ordinal')
-        for ses, seed in zip(all_ses, ses_seeds):
-            numpy.random.seed(seed)
-            ruptures = []
-            # make copies of the hazardlib ruptures (which may contain
-            # duplicates)
-            rupts = map(
-                copy.copy,
-                stochastic.stochastic_event_set_poissonian(
-                    [src], hc.investigation_time, site_collection,
-                    src_filter, rup_filter))
-            # set the tag for each copy
-            for i, r in enumerate(rupts):
-                r.tag = 'rlz=%02d|ses=%04d|src=%s|i=%03d' % (
-                    lt_rlz.ordinal, ses.ordinal, src.source_id, i)
-            ruptures.extend(rupts)
-        if not ruptures:
-            return
+    with task_mon.copy('computing ses ruptures'):
+        # make copies of the hazardlib ruptures (which may contain
+        # duplicates)
+        ruptures = map(
+            copy.copy,
+            stochastic.stochastic_event_set_poissonian(
+                [src], hc.investigation_time, site_collection,
+                src_filter, rup_filter))
+        # set the tag for each copy
+        for i, r in enumerate(ruptures):
+            r.tag = 'rlz=%02d|ses=%04d|src=%s|i=%03d' % (
+                lt_rlz.ordinal, ses.ordinal, src.source_id, i)
 
-    with task_mon.copy('saving ses'):
-        _save_ses_ruptures(ses, ruptures, cmplt_lt_ses)
+    if ruptures:
+        with task_mon.copy('saving ses ruptures'):
+            _save_ses_ruptures(ses, ruptures, cmplt_lt_ses)
 
 
 @tasks.momotask
-def compute_and_save_gmf(task_mon, job_id, gsims, rupture):
+def compute_and_save_gmf(task_mon, job_id, gsim, rupture):
     """
     """
     with task_mon.copy('reading calculation and site collection'):
@@ -163,7 +154,7 @@ def compute_and_save_gmf(task_mon, job_id, gsims, rupture):
             'rupture': rupture.rupture,
             'sites': site_collection,
             'imts': imts,
-            'gsim': gsims[rupture.tectonic_region_type],
+            'gsim': gsim,
             'truncation_level': hc.truncation_level,
             'realizations': DEFAULT_GMF_REALIZATIONS,
             'correlation_model': correl_model,
@@ -247,12 +238,14 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
                 .filter(is_complete=False, lt_realization=lt_rlz)\
                 .order_by('id')\
                 .values_list('parsed_source_id', flat=True)
-            lt_seed = rnd.randint(0, models.MAX_SINT_32)
-            for src_id in sources:
-                ses_seeds = [rnd.randint(0, models.MAX_SINT_32) for _ in
-                             range(self.hc.ses_per_logic_tree_path)]
-                task_args = (self.job.id, src_id, lt_rlz, lt_seed, ses_seeds)
-                yield task_args
+            all_ses = models.SES.objects.filter(
+                ses_collection__lt_realization=lt_rlz,
+                ordinal__isnull=False).order_by('ordinal')
+            for ses in all_ses:
+                for src_id in sources:
+                    seed = rnd.randint(0, models.MAX_SINT_32)
+                    task_args = (self.job.id, src_id, ses, seed)
+                    yield task_args
 
     def compute_and_save_gmf_arg_gen(self):
         """
@@ -263,7 +256,7 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
             ruptures = models.SESRupture.objects.filter(
                 ses__ses_collection__lt_realization=lt_rlz)
             for rupture in ruptures:
-                yield self.job.id, gsims, rupture
+                yield self.job.id, gsims[rupture.tectonic_region_type], rupture
 
     def execute(self):
         """
