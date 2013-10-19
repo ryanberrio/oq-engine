@@ -50,6 +50,7 @@ from openquake.engine.calculators.hazard.event_based import post_processing
 from openquake.engine.db import models
 from openquake.engine.input import logictree
 from openquake.engine.utils import tasks
+from openquake.engine.utils.general import block_splitter
 
 
 #: Always 1 for the computation of ground motion fields in the event-based
@@ -140,18 +141,18 @@ def compute_and_save_ses(task_mon, job_id, src_ids, ses, task_seed):
 
 
 @tasks.momotask
-def compute_and_save_gmfs(task_mon, job_id, gsims, ses, site):
+def compute_and_save_gmfs(task_mon, job_id, gsims, ses, sites):
     """
     """
     with task_mon.copy('reading hazard calculation again'):
         hc = models.HazardCalculation.objects.get(oqjob=job_id)
     with task_mon.copy('computing gmfs'):
-        gmf_cache = compute_gmf_cache(hc, gsims, ses, [site])
+        gmf_cache = compute_gmf_cache(hc, gsims, ses, sites)
     with task_mon.copy('saving gmfs'):
-        _save_gmfs(ses, gmf_cache, [site])
+        _save_gmfs(ses, gmf_cache, sites)
 
 
-def compute_gmf_cache(hc, gsims, ses, sites):
+def compute_gmf_cache(hc, gsims, ses, site_coll):
     """
     Compute a ground motion field value for each rupture, for all the
     points affected by that rupture, for all IMTs.
@@ -162,8 +163,7 @@ def compute_gmf_cache(hc, gsims, ses, sites):
     if hc.ground_motion_correlation_model is not None:
         correl_model = haz_general.get_correl_model(hc)
 
-    n_points = len(sites)  # only one site in practice
-    site_coll = models.SiteCollection(sites)
+    n_points = len(site_coll)
 
     # initialize gmf_cache, a dict imt -> {gmvs, rupture_ids}
     gmf_cache = dict((imt, dict(gmvs=numpy.empty((n_points, 0)),
@@ -301,9 +301,9 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
                 .order_by('id')\
                 .values_list('parsed_source_id', flat=True)
 
-            all_ses = list(models.SES.objects.filter(
-                           ses_collection__lt_realization=lt_rlz,
-                           ordinal__isnull=False).order_by('ordinal'))
+            all_ses = models.SES.objects.filter(
+                ses_collection__lt_realization=lt_rlz,
+                ordinal__isnull=False).order_by('ordinal')
 
             for ses in all_ses:
                 for src_id in sources:
@@ -320,8 +320,8 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
                 ses_collection__lt_realization=lt_rlz,
                 ordinal__isnull=False).order_by('ordinal')
             for ses in all_ses:
-                for site in self.hc.site_collection:
-                    yield self.job.id, gsims, ses, site
+                for sites in block_splitter(self.hc.site_collection, 1000):
+                    yield self.job.id, gsims, ses, models.SiteCollection(sites)
 
     def execute(self):
         """
