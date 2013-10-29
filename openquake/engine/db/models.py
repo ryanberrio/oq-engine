@@ -2312,7 +2312,7 @@ def get_gmfs_scenario(output, imt=None):
     """
     Iterator for walking through all :class:`GmfData` objects associated
     to a given output. Notice that the fields are ordered according to the
-    location, so it is possible to get reproducible outputs in the test cases.
+    gmv and it is possible to get reproducible outputs in the test cases.
 
     :param output: instance of :class:`openquake.engine.db.models.Output`
 

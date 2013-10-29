@@ -28,8 +28,7 @@ from openquake.hazardlib.calc import ground_motion_fields
 import openquake.hazardlib.gsim
 
 from openquake.engine.calculators.hazard import general as haz_general
-from openquake.engine.calculators import base
-from openquake.engine.utils import tasks, stats
+from openquake.engine.utils import tasks
 from openquake.engine.db import models
 from openquake.engine.input import source
 from openquake.engine import writer
@@ -37,40 +36,26 @@ from openquake.engine.utils.general import block_splitter
 from openquake.engine.performance import EnginePerformanceMonitor
 
 
-BLOCK_SIZE = 1000  # TODO: decide where to put this parameter
+BLOCK_SIZE = 100  # TODO: decide where to put this parameter
 
 AVAILABLE_GSIMS = openquake.hazardlib.gsim.get_available_gsims()
 
 
 @tasks.oqtask
-@stats.count_progress('h')
-def gmfs(job_id, sites, rupture_id, gmfcoll_id, task_seed, realizations):
-    """
-    A celery task wrapper function around :func:`compute_gmfs`.
-    See :func:`compute_gmfs` for parameter definitions.
-    """
-    numpy.random.seed(task_seed)
-    compute_gmfs(job_id, sites, rupture_id, gmfcoll_id, realizations)
-    base.signal_task_complete(job_id=job_id, num_items=len(sites))
-
-
-def compute_gmfs(job_id, sites, rupture_id, gmfcoll_id, realizations):
+def compute_gmfs(job_id, seeds, rupture_id, gmfcoll_id):
     """
     Compute ground motion fields and store them in the db.
 
     :param job_id:
         ID of the currently running job.
-    :param sites:
-        The subset of the full SiteCollection scanned by this task
+    :param seeds:
+        The seeds to use to generate the current block of realizations
     :param rupture_id:
         The parsed rupture model from which we will generate
         ground motion fields.
     :param gmfcoll_id:
         the id of a :class:`openquake.engine.db.models.Gmf` record
-    :param realizations:
-        Number of realizations to create.
     """
-
     hc = models.HazardCalculation.objects.get(oqjob=job_id)
     rupture_mdl = source.nrml_to_hazardlib(
         models.ParsedRupture.objects.get(id=rupture_id).nrml,
@@ -79,14 +64,25 @@ def compute_gmfs(job_id, sites, rupture_id, gmfcoll_id, realizations):
             for x in hc.intensity_measure_types]
     gsim = AVAILABLE_GSIMS[hc.gsim]()  # instantiate the GSIM class
     correlation_model = haz_general.get_correl_model(hc)
+    site_indexes = range(len(hc.site_collection))
+    with EnginePerformanceMonitor('computing gmfs', job_id, compute_gmfs):
+        all_gmf = dict((imt, [[] for _ in site_indexes])
+                       for imt in imts)
+        # is a dictionary associating to each IMT a list of nsites
+        # lists, each one one of size len(seeds)
+        for seed in seeds:
+            numpy.random.seed(seed)
+            gmf = ground_motion_fields(
+                rupture_mdl, hc.site_collection, imts, gsim,
+                hc.truncation_level, realizations=1,
+                correlation_model=correlation_model)
+            for imt in gmf:
+                for i in site_indexes:
+                    all_gmf[imt][i].append(float(gmf[imt][i]))
+    with EnginePerformanceMonitor('saving gmfs', job_id, compute_gmfs):
+        save_gmf(gmfcoll_id, all_gmf, hc.site_collection)
 
-    with EnginePerformanceMonitor('computing gmfs', job_id, gmfs):
-        gmf = ground_motion_fields(
-            rupture_mdl, sites, imts, gsim,
-            hc.truncation_level, realizations=realizations,
-            correlation_model=correlation_model)
-    with EnginePerformanceMonitor('saving gmfs', job_id, gmfs):
-        save_gmf(gmfcoll_id, gmf, sites)
+compute_gmfs.ignore_result = False  # essential
 
 
 @transaction.commit_on_success(using='reslt_writer')
@@ -105,12 +101,7 @@ def save_gmf(gmfcoll_id, gmf_dict, sites):
     inserter = writer.CacheInserter(models.GmfData, 100)
     # NB: GmfData may contain large arrays and the cache may become large
 
-    for imt, gmfs_ in gmf_dict.iteritems():
-        # ``gmfs`` comes in as a numpy.matrix
-        # we want it is an array; it handles subscripting
-        # in the way that we want
-        gmfarray = numpy.array(gmfs_)
-
+    for imt, gmvs in gmf_dict.iteritems():
         sa_period = None
         sa_damping = None
         if isinstance(imt, openquake.hazardlib.imt.SA):
@@ -127,7 +118,7 @@ def save_gmf(gmfcoll_id, gmf_dict, sites):
                 sa_damping=sa_damping,
                 site_id=site.id,
                 rupture_ids=None,
-                gmvs=gmfarray[i].tolist()))
+                gmvs=gmvs[i]))
 
     inserter.flush()
 
@@ -137,7 +128,7 @@ class ScenarioHazardCalculator(haz_general.BaseHazardCalculator):
     Scenario hazard calculator. Computes ground motion fields.
     """
 
-    core_calc_task = gmfs
+    core_calc_task = compute_gmfs
     output = None  # defined in pre_execute
 
     def initialize_sources(self):
@@ -193,6 +184,12 @@ class ScenarioHazardCalculator(haz_general.BaseHazardCalculator):
         # create an associated gmf record
         self.gmfcoll = models.Gmf.objects.create(output=output)
 
+    def execute(self):
+        """
+        Run compute_gmfs in parallel.
+        """
+        self.parallelize(self.core_calc_task, self.task_arg_gen(BLOCK_SIZE))
+
     def task_arg_gen(self, block_size):
         """
         Loop through realizations and sources to generate a sequence of
@@ -209,11 +206,8 @@ class ScenarioHazardCalculator(haz_general.BaseHazardCalculator):
         rnd.seed(self.hc.random_seed)
 
         inp = models.inputs4hcalc(self.hc.id, 'rupture_model')[0]
-        ruptures = models.ParsedRupture.objects.filter(input__id=inp.id)
-        rupture_id = [rupture.id for rupture in ruptures][0]  # only one
-
-        for sites in block_splitter(self.hc.site_collection, BLOCK_SIZE):
-            task_seed = rnd.randint(0, models.MAX_SINT_32)
-            yield (self.job.id, models.SiteCollection(sites),
-                   rupture_id, self.gmfcoll.id, task_seed,
-                   self.hc.number_of_ground_motion_fields)
+        rupture_id = models.ParsedRupture.objects.get(input__id=inp.id).id
+        n_gmf = self.hc.number_of_ground_motion_fields
+        all_seeds = [rnd.randint(0, models.MAX_SINT_32) for _ in range(n_gmf)]
+        for seeds in block_splitter(all_seeds, block_size):
+            yield self.job.id, seeds, rupture_id, self.gmfcoll.id
