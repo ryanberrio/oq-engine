@@ -163,7 +163,8 @@ def compute_gmf(job_id, rupture_ids, rupture_seeds, params, imt, gsims,
     """
     Compute and save the GMFs for all the ruptures in a SES.
     """
-    assert len(rupture_ids) == rupture_seeds
+    assert len(rupture_ids) == len(rupture_seeds), (
+        len(rupture_ids), len(rupture_seeds))
     imt = haz_general.imt_to_hazardlib(imt)
     rup_filter = filters.rupture_site_distance_filter(
         params['maximum_distance'])
