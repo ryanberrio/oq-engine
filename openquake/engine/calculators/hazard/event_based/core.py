@@ -163,6 +163,7 @@ def compute_gmf(job_id, rupture_ids, rupture_seeds, params, imt, gsims,
     """
     Compute and save the GMFs for all the ruptures in a SES.
     """
+    assert len(rupture_ids) == rupture_seeds
     imt = haz_general.imt_to_hazardlib(imt)
     rup_filter = filters.rupture_site_distance_filter(
         params['maximum_distance'])
@@ -171,19 +172,27 @@ def compute_gmf(job_id, rupture_ids, rupture_seeds, params, imt, gsims,
             'reading ruptures', job_id, compute_gmf):
         ruptures = list(models.SESRupture.objects.filter(pk__in=rupture_ids))
 
+    filtered_ruptures = []
+    filtered_seeds = []
     with EnginePerformanceMonitor(
             'filtering ruptures', job_id, compute_gmf):
         # get the ruptures in the SES within the maximum distance
-        ruptures = []
-        for r in models.SESRupture.objects.filter(ses=ses):
+        for r, s in zip(ruptures, rupture_seeds):
             # if the rup_filter gives a non-empty result keep the rupture
             if list(rup_filter([(r.rupture, site_coll)])):
-                ruptures.append(r)
-
+                filtered_ruptures.append(r)
+                filtered_seeds.append(s)
+    logs.LOG.info('considering %d ruptures of %d',
+                  len(filtered_ruptures), len(ruptures))
+    if not filtered_ruptures:
+        # exceptional case when everything is filtered away:
+        # it should be unlikely
+        return
     with EnginePerformanceMonitor(
             'computing gmfs', job_id, compute_gmf):
         gmvs_per_site, ruptures_per_site = _compute_gmf(
-            params, imt, gsims, site_coll, ruptures, rupture_seeds)
+            params, imt, gsims, site_coll,
+            filtered_ruptures, filtered_seeds)
 
     with EnginePerformanceMonitor('saving gmfs', job_id, compute_gmf):
         _save_gmfs(ses, imt, gmvs_per_site, ruptures_per_site, site_coll)
