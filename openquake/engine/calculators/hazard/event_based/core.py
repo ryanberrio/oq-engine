@@ -353,27 +353,27 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
         """
         Loop through realizations and sources to generate a sequence of
         task arg tuples. Each tuple of args applies to a single task.
-        Yielded results are tuples of the form job_id, src_ids, ses, seeds
+        Yielded results are tuples of the form job_id, sources, ses, seeds
         (seeds will be used to seed numpy for temporal occurence sampling).
         """
         hc = self.hc
         rnd = random.Random()
         rnd.seed(hc.random_seed)
-        realizations = self._get_realizations()
+        src_filter = filters.source_site_distance_filter(hc.maximum_distance)
 
-        for lt_rlz in realizations:
+        for lt_rlz in self._get_realizations():
             ltp = logictree.LogicTreeProcessor(hc.id)
             apply_uncertainties = ltp.parse_source_model_logictree_path(
                 lt_rlz.sm_lt_path)
 
-            src_filter = filters.source_site_distance_filter(
-                hc.maximum_distance)
-
+            n_sources = 0
+            n_filtered = 0
             with self.monitor('reading sources'):
                 all_src_ids = models.SourceProgress.objects\
                     .filter(is_complete=False, lt_realization=lt_rlz)\
                     .order_by('id')\
                     .values_list('parsed_source_id', flat=True)
+                n_sources += len(all_src_ids)
 
             all_ses = list(models.SES.objects.filter(
                            ses_collection__lt_realization=lt_rlz,
@@ -388,13 +388,17 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
                         hc.width_of_mfd_bin, hc.area_source_discretization)
                     src_list = [src for src, _sites in src_filter(
                                 (s, hc.site_collection) for s in sources)]
+                    n_filtered += len(src_list)
                 if not src_list:
                     continue
                 for ses in all_ses:
                     # compute seeds for the sources
                     src_seeds = [rnd.randint(0, models.MAX_SINT_32)
                                  for _ in src_list]
-                    yield (self.job.id, src_list, ses, src_seeds)
+                    yield self.job.id, src_list, ses, src_seeds
+            logs.LOG.info(
+                'Considering %d sources of %d for lt_path=%s',
+                n_filtered, n_sources, lt_rlz.sm_lt_path)
 
     def compute_gmf_arg_gen(self):
         """

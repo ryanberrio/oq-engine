@@ -1,4 +1,4 @@
-# Copyright (c) 2010-2012, GEM Foundation.
+# Copyright (c) 2010-2013, GEM Foundation.
 #
 # OpenQuake is free software: you can redistribute it and/or modify it
 # under the terms of the GNU Affero General Public License as published
@@ -17,7 +17,6 @@
 import os
 import getpass
 import unittest
-import itertools
 import mock
 import numpy
 
@@ -48,12 +47,12 @@ def make_mock_points(n):
     return points
 
 
-def make_site_coll(n):
+def make_site_coll(lon, lat, n):
     assert n <= 1000
     sites = []
     for i in range(n):
-        lon = -78 - float(i) / 1000
-        site = Site(Point(lon, 15.5), 800., 'measured', 50., 2.5, i)
+        site = Site(Point(lon - float(i) / 1000, lat),
+                    800., 'measured', 50., 2.5, i)
         sites.append(site)
     return models.SiteCollection(sites)
 
@@ -84,7 +83,7 @@ class EventBasedHazardTestCase(unittest.TestCase):
         hc.maximum_distance = 200.
 
         gsim = get_available_gsims()['AkkarBommer2010']()
-        site_coll = make_site_coll(5)
+        site_coll = make_site_coll(-78, 15.5, n=5)
         params = dict(truncation_level=3,
                       correl_model=None,
                       maximum_distance=200)
@@ -330,6 +329,7 @@ class EventBasedHazardCalculatorTestCase(unittest.TestCase):
 
     def test_task_arg_gen(self):
         hc = self.job.hazard_calculation
+        models.SiteCollection.cache[hc.id] = make_site_coll(0, 0, n=5)
 
         self.calc.initialize_sources()
         self.calc.initialize_realizations()
@@ -340,63 +340,53 @@ class EventBasedHazardCalculatorTestCase(unittest.TestCase):
         [s1, s2, s3, s4, s5] = self.calc.initialize_ses_db_records(rlz1)
         [t1, t2, t3, t4, t5] = self.calc.initialize_ses_db_records(rlz2)
 
-        expected = [  # sources, ses_id, seed
-            ([1], s1, [1711655216]),
-            ([1], s2, [1038305917]),
-            ([1], s3, [836289861]),
-            ([1], s4, [1781144172]),
-            ([1], s5, [1869241528]),
-            ([2], s1, [215682727]),
-            ([2], s2, [1101399957]),
-            ([2], s3, [2054512780]),
-            ([2], s4, [1550095676]),
-            ([2], s5, [1537531637]),
-            ([3], s1, [834081132]),
-            ([3], s2, [2109160433]),
-            ([3], s3, [1527803099]),
-            ([3], s4, [1876252834]),
-            ([3], s5, [1712942246]),
-            ([4], s1, [219667398]),
-            ([4], s2, [332999334]),
-            ([4], s3, [1017801655]),
-            ([4], s4, [1577927432]),
-            ([4], s5, [1810736590]),
-            ([1], t1, [745519017]),
-            ([1], t2, [2107357950]),
-            ([1], t3, [1305437041]),
-            ([1], t4, [75519567]),
-            ([1], t5, [179387370]),
-            ([2], t1, [1653492095]),
-            ([2], t2, [176278337]),
-            ([2], t3, [777508283]),
-            ([2], t4, [718002527]),
-            ([2], t5, [1872666256]),
-            ([3], t1, [796266430]),
-            ([3], t2, [646033314]),
-            ([3], t3, [289567826]),
-            ([3], t4, [1964698790]),
-            ([3], t5, [613832594]),
-            ([4], t1, [1858181087]),
-            ([4], t2, [195127891]),
-            ([4], t3, [1761641849]),
-            ([4], t4, [259827383]),
-            ([4], t5, [1464146382]),
+        expected = [  # source_id, ses_id, seed
+            (['1'], s1, [1711655216]),
+            (['1'], s2, [1038305917]),
+            (['1'], s3, [836289861]),
+            (['1'], s4, [1781144172]),
+            (['1'], s5, [1869241528]),
+            (['2'], s1, [215682727]),
+            (['2'], s2, [1101399957]),
+            (['2'], s3, [2054512780]),
+            (['2'], s4, [1550095676]),
+            (['2'], s5, [1537531637]),
+            (['3'], s1, [834081132]),
+            (['3'], s2, [2109160433]),
+            (['3'], s3, [1527803099]),
+            (['3'], s4, [1876252834]),
+            (['3'], s5, [1712942246]),
+            (['4'], s1, [219667398]),
+            (['4'], s2, [332999334]),
+            (['4'], s3, [1017801655]),
+            (['4'], s4, [1577927432]),
+            (['4'], s5, [1810736590]),
+            (['1'], t1, [745519017]),
+            (['1'], t2, [2107357950]),
+            (['1'], t3, [1305437041]),
+            (['1'], t4, [75519567]),
+            (['1'], t5, [179387370]),
+            (['2'], t1, [1653492095]),
+            (['2'], t2, [176278337]),
+            (['2'], t3, [777508283]),
+            (['2'], t4, [718002527]),
+            (['2'], t5, [1872666256]),
+            (['3'], t1, [796266430]),
+            (['3'], t2, [646033314]),
+            (['3'], t3, [289567826]),
+            (['3'], t4, [1964698790]),
+            (['3'], t5, [613832594]),
+            (['4'], t1, [1858181087]),
+            (['4'], t2, [195127891]),
+            (['4'], t3, [1761641849]),
+            (['4'], t4, [259827383]),
+            (['4'], t5, [1464146382]),
         ]
 
-        # utilities to present the generated arguments in a nicer way
-        dic = {}
-        counter = itertools.count(1)
-
-        def src_no(src_id):
-            try:
-                return dic[src_id]
-            except KeyError:
-                dic[src_id] = counter.next()
-                return dic[src_id]
-
+        # utility to present the generated arguments in a nicer way
         def process_args(arg_gen):
-            for job_id, source_ids, ses, task_seed in arg_gen:
-                yield map(src_no, source_ids), ses, task_seed
+            for job_id, sources, ses, task_seed in arg_gen:
+                yield [s.source_id for s in sources], ses, task_seed
 
         actual = list(process_args(self.calc.task_arg_gen()))
         self.assertEqual(expected, actual)
