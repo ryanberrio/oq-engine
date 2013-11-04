@@ -540,8 +540,7 @@ class SourceDBWriter(object):
                     nrml=hazardlib_source,
                     source_model_filename=self.source_model_filename)
                 num_filtered += 1
-        logs.LOG.info('Considering %d sources of %d',
-                      num_filtered, num_sources)
+        logs.LOG.info('keeping %d sources of %d', num_filtered, num_sources)
 
 
 class RuptureDBWriter(object):
