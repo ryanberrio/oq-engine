@@ -30,9 +30,10 @@ from shapely import geometry
 
 import openquake.hazardlib
 import openquake.hazardlib.site
-from openquake.hazardlib import filters
+from openquake.hazardlib.calc import filters
 from openquake.hazardlib import correlation
 from openquake.hazardlib import geo as hazardlib_geo
+
 from openquake.nrmllib import parsers as nrml_parsers
 from openquake.nrmllib.risk import parsers
 
