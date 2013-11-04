@@ -16,8 +16,6 @@
 
 """Base code for calculator classes."""
 
-import math
-
 import kombu
 
 import openquake.engine
@@ -25,7 +23,7 @@ import openquake.engine
 from openquake.engine import logs
 from openquake.engine.db import models
 from openquake.engine.performance import EnginePerformanceMonitor
-from openquake.engine.utils import config, tasks, general
+from openquake.engine.utils import config, tasks
 
 # Routing key format string for communication between tasks and the control
 # node.

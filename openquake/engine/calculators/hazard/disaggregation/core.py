@@ -126,11 +126,6 @@ def compute_disagg(job_id, sites, lt_rlz_id):
     sources = [apply_uncertainties(s.nrml)
                for s in models.ParsedSource.objects.filter(pk__in=src_ids)]
 
-    # Make filters for distance to source and distance to rupture:
-    # a better approach would be to filter the sources on distance
-    # before, see the comment in the classical calculator
-    src_site_filter = openquake.hazardlib.calc.filters.\
-        source_site_distance_filter(hc.maximum_distance)
     rup_site_filter = openquake.hazardlib.calc.filters.\
         rupture_site_distance_filter(hc.maximum_distance)
 
@@ -174,7 +169,6 @@ def compute_disagg(job_id, sites, lt_rlz_id):
                     'mag_bin_width': hc.mag_bin_width,
                     'dist_bin_width': hc.distance_bin_width,
                     'coord_bin_width': hc.coordinate_bin_width,
-                    'source_site_filter': src_site_filter,
                     'rupture_site_filter': rup_site_filter,
                 }
                 with EnginePerformanceMonitor(

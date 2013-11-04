@@ -23,14 +23,14 @@ import os
 import random
 import re
 
-import openquake.hazardlib
-import openquake.hazardlib.site
 import numpy
-
 from django.db import transaction, connections
 from django.db.models import Sum
 from shapely import geometry
 
+import openquake.hazardlib
+import openquake.hazardlib.site
+from openquake.hazardlib import filters
 from openquake.hazardlib import correlation
 from openquake.hazardlib import geo as hazardlib_geo
 from openquake.nrmllib import parsers as nrml_parsers
@@ -439,11 +439,15 @@ class BaseHazardCalculator(base.Calculator):
 
     def get_source_filter_condition(self):
         """
-        Return a filter function, i.e. a function source -> boolean to filter
-        the sources to save; by default it returns always True and no sources
-        are filtered.
+        Return a function filtering on the maximum_distance
         """
-        return lambda src: True
+        src_filter = filters.source_site_distance_filter(
+            self.hc.maximum_distance)
+
+        def filter_on_distance(src):
+            """True if the source is relevant for the site collection"""
+            return bool(list(src_filter([(src, self.hc.site_collection)])))
+        return filter_on_distance
 
     @EnginePerformanceMonitor.monitor
     def initialize_sources(self):

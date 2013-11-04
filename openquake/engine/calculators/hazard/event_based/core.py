@@ -499,18 +499,6 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
                 output_type='complete_lt_gmf')
             models.Gmf.objects.create(output=clt_gmf_output)
 
-    def get_source_filter_condition(self):
-        """
-        Return a function filtering on the maximum_distance
-        """
-        src_filter = filters.source_site_distance_filter(
-            self.hc.maximum_distance)
-
-        def filter_on_distance(src):
-            """True if the source is relevant for the site collection"""
-            return bool(list(src_filter([(src, self.hc.site_collection)])))
-        return filter_on_distance
-
     def pre_execute(self):
         """
         Do pre-execution work. At the moment, this work entails:
