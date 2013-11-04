@@ -13,7 +13,6 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with OpenQuake.  If not, see <http://www.gnu.org/licenses/>.
 
-
 import getpass
 import unittest
 
@@ -22,10 +21,10 @@ import numpy
 
 from nose.plugins.attrib import attr
 
-from openquake.engine.calculators import base
+from openquake.engine.calculators import base, hazard
 from openquake.engine.calculators.hazard.classical import core
 from openquake.engine.db import models
-from openquake.engine.utils import stats
+from openquake.engine.input import logictree
 from tests.utils import helpers
 
 
@@ -37,6 +36,8 @@ class ClassicalHazardCalculatorTestCase(unittest.TestCase):
     def setUp(self):
         self.job, self.calc = self._setup_a_new_calculator()
         models.JobStats.objects.create(oq_job=self.job)
+        hazard.general.get_source_filter_condition = \
+            lambda self: lambda src: True
 
     def _setup_a_new_calculator(self):
         cfg = helpers.get_data_path('simple_fault_demo_hazard/job.ini')
@@ -55,10 +56,8 @@ class ClassicalHazardCalculatorTestCase(unittest.TestCase):
             '%s.%s' % (base_path, 'initialize_realizations'))
         record_stats_patch = helpers.patch(
             '%s.%s' % (base_path, 'record_init_stats'))
-        init_pr_data_patch = helpers.patch(
-            '%s.%s' % (base_path, 'initialize_pr_data'))
         patches = (init_src_patch, init_rlz_patch,
-                   record_stats_patch, init_pr_data_patch)
+                   record_stats_patch)
 
         mocks = [p.start() for p in patches]
 
@@ -71,28 +70,6 @@ class ClassicalHazardCalculatorTestCase(unittest.TestCase):
             self.assertEqual(1, m.call_count)
             m.stop()
             patches[i].stop()
-
-    def test_initalize_sources(self):
-        self.calc.initialize_sources()
-
-        # The source model logic tree for this configuration has only 1 source
-        # model:
-        [source] = models.inputs4hcalc(
-            self.job.hazard_calculation.id, input_type='source')
-
-        parsed_sources = models.ParsedSource.objects.filter(input=source)
-        # This source model contains 118 sources:
-        self.assertEqual(118, len(parsed_sources))
-
-        # Finally, check the Src2ltsrc linkage:
-        [smlt] = models.inputs4hcalc(
-            self.job.hazard_calculation.id,
-            input_type='source_model_logic_tree')
-        [src2ltsrc] = models.Src2ltsrc.objects.filter(
-            hzrd_src=source, lt_src=smlt)
-        # Make sure the `filename` is exactly as it apprears in the logic tree.
-        # This is import for the logic tree processing we need to do later on.
-        self.assertEqual('dissFaultModel.xml', src2ltsrc.filename)
 
     @attr('slow')
     def test_initialize_site_model(self):
@@ -107,9 +84,7 @@ class ClassicalHazardCalculatorTestCase(unittest.TestCase):
         # `RuntimeError` should be raised here
 
         # Okay, it's all good. Now check the count of the site model records.
-        [site_model_inp] = models.inputs4hcalc(
-            self.job.hazard_calculation.id, input_type='site_model')
-        sm_nodes = models.SiteModel.objects.filter(input=site_model_inp)
+        sm_nodes = models.SiteModel.objects.filter(job=self.job)
 
         self.assertEqual(2601, len(sm_nodes))
 
@@ -122,6 +97,16 @@ class ClassicalHazardCalculatorTestCase(unittest.TestCase):
         # The site model is good. Now test that `hazard_site` was computed.
         # For now, just test the length.
         self.assertEqual(num_pts_to_compute, len(hazard_site))
+
+    def test_initialize_sources(self):
+        self.calc.initialize_sources()
+
+        # The source model contains 97 sources:
+        self.assertEqual(
+            97,
+            models.ParsedSource.objects.filter(job=self.calc.job).count())
+
+        models.ParsedSource.objects.filter(job=self.calc.job).delete()
 
     def test_initialize_site_model_no_site_model(self):
         patch_path = 'openquake.engine.calculators.hazard.general.\
@@ -137,19 +122,19 @@ store_site_model'
         # source_progress records (that is, 1 record per source).
         src_prog = models.SourceProgress.objects.filter(
             lt_realization=ltr.id)
-        self.assertEqual(118, len(src_prog))
+        self.assertEqual(17, len(src_prog))
         self.assertFalse(any([x.is_complete for x in src_prog]))
 
         # Check that hazard curve progress records were properly
         # initialized:
         [hc_prog_pga] = models.HazardCurveProgress.objects.filter(
             lt_realization=ltr.id, imt="PGA")
-        self.assertEqual((120, 19), hc_prog_pga.result_matrix.shape)
+        self.assertEqual((2072, 19), hc_prog_pga.result_matrix.shape)
         self.assertTrue((hc_prog_pga.result_matrix == 0).all())
 
         [hc_prog_sa] = models.HazardCurveProgress.objects.filter(
             lt_realization=ltr.id, imt="SA(0.025)")
-        self.assertEqual((120, 19), hc_prog_sa.result_matrix.shape)
+        self.assertEqual((2072, 19), hc_prog_sa.result_matrix.shape)
         self.assertTrue((hc_prog_sa.result_matrix == 0).all())
 
     def test_initialize_realizations_montecarlo(self):
@@ -175,7 +160,7 @@ store_site_model'
         self.assertFalse(ltr1.is_complete)
         self.assertEqual(['b1'], ltr1.sm_lt_path)
         self.assertEqual(['b1'], ltr1.gsim_lt_path)
-        self.assertEqual(118, ltr1.total_items)
+        self.assertEqual(97, ltr1.total_items)
         self.assertEqual(0, ltr1.completed_items)
 
         self.assertEqual(1, ltr2.ordinal)
@@ -183,32 +168,13 @@ store_site_model'
         self.assertFalse(ltr2.is_complete)
         self.assertEqual(['b1'], ltr2.sm_lt_path)
         self.assertEqual(['b1'], ltr2.gsim_lt_path)
-        self.assertEqual(118, ltr2.total_items)
+        self.assertEqual(97, ltr2.total_items)
         self.assertEqual(0, ltr2.completed_items)
 
         for ltr in (ltr1, ltr2):
             # Now check that we have source_progress records for each
             # realization.
             self._check_logic_tree_realization_source_progress(ltr)
-
-    def test_initialize_pr_data(self):
-        # The total/done counters for progress reporting are initialized
-        # correctly.
-        self.calc.initialize_sources()
-        self.calc.initialize_realizations(
-            rlz_callbacks=[self.calc.initialize_hazard_curve_progress])
-        ltr1, ltr2 = models.LtRealization.objects.filter(
-            hazard_calculation=self.job.hazard_calculation.id).order_by("id")
-
-        ltr1.completed_items = 11
-        ltr1.save()
-
-        self.calc.initialize_pr_data()
-
-        total = stats.pk_get(self.calc.job.id, "nhzrd_total")
-        self.assertEqual(ltr1.total_items + ltr2.total_items, total)
-        done = stats.pk_get(self.calc.job.id, "nhzrd_done")
-        self.assertEqual(ltr1.completed_items + ltr2.completed_items, done)
 
     def test_initialize_realizations_enumeration(self):
         self.calc.initialize_sources()
@@ -226,7 +192,7 @@ store_site_model'
         self.assertFalse(ltr.is_complete)
         self.assertEqual(['b1'], ltr.sm_lt_path)
         self.assertEqual(['b1'], ltr.gsim_lt_path)
-        self.assertEqual(118, ltr.total_items)
+        self.assertEqual(17, ltr.total_items)
         self.assertEqual(0, ltr.completed_items)
 
         self._check_logic_tree_realization_source_progress(ltr)
@@ -412,7 +378,10 @@ store_site_model'
             task_signal_queue(conn.channel()).declare()
             with conn.Consumer(task_signal_queue, callbacks=[test_callback]):
                 # call the task as a normal function
-                core.hazard_curves(self.job.id, [src_id], lt_rlz.id)
+                core.hazard_curves(
+                    self.job.id, [src_id], lt_rlz.id,
+                    logictree.LogicTreeProcessor.from_hc(
+                        self.job.hazard_calculation))
                 # wait for the completion signal
                 conn.drain_events()
 
