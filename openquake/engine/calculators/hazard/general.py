@@ -24,6 +24,7 @@ import random
 import re
 
 import numpy
+from celery.task import task
 from django.db import transaction, connections
 from django.db.models import Sum
 from shapely import geometry
@@ -231,6 +232,25 @@ def validate_site_model(sm_nodes, mesh):
             ['Sites of interest are outside of the site model coverage area.'
              ' This configuration is invalid.']
         )
+
+
+@task
+def import_sources(calculator, inp, sources):
+    """
+    Import into the database the sources satisfying the filtering
+    condition.
+
+    :param calculator: a BaseHazardCalculator instance
+    :param inp: a source object
+    :param sources: a list of sources
+    """
+    source.SourceDBWriter(
+        inp,
+        sources,
+        calculator.hc.rupture_mesh_spacing,
+        calculator.hc.width_of_mfd_bin,
+        calculator.hc.area_source_discretization,
+        calculator.get_source_filter_condition()).serialize()
 
 
 class BaseHazardCalculator(base.Calculator):
@@ -481,13 +501,10 @@ class BaseHazardCalculator(base.Calculator):
             # convert nrmllib sources and save hazardlib sources
             src_content = inp.model_content.as_string_io
             sm_parser = nrml_parsers.SourceModelParser(src_content)
-            src_db_writer = source.SourceDBWriter(
-                inp, sm_parser.parse(),
-                self.hc.rupture_mesh_spacing,
-                self.hc.width_of_mfd_bin,
-                self.hc.area_source_discretization,
-                self.get_source_filter_condition())
-            src_db_writer.serialize()
+            blocks = block_splitter(sm_parser.parse(), self.concurrent_tasks())
+            self.parallelize(
+                import_sources,
+                [(self, inp, sources) for sources in blocks])
 
     @EnginePerformanceMonitor.monitor
     def parse_risk_models(self):

@@ -240,13 +240,13 @@ store_site_model'
         # Test the job stats:
         job_stats = models.JobStats.objects.get(oq_job=self.job.id)
         # num sources * num lt samples / block size (items per task):
-        self.assertEqual(236, job_stats.num_tasks)
+        self.assertEqual(34, job_stats.num_tasks)
         self.assertEqual(120, job_stats.num_sites)
         self.assertEqual(2, job_stats.num_realizations)
 
         # Check the calculator total/progress counters as well:
         self.assertEqual(0, self.calc.progress['computed'])
-        self.assertEqual(236, self.calc.progress['total'])
+        self.assertEqual(34, self.calc.progress['total'])
 
         # Update job status to move on to the execution phase.
         self.job.is_running = True

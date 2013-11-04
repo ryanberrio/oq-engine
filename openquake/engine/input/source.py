@@ -523,30 +523,29 @@ class SourceDBWriter(object):
         self.area_src_disc = area_src_disc
         self.condition = condition
 
+        assert self.inp.input_type == 'source', (
+            "`Input` object has the wrong `input_type`. Expected: 'source'."
+            "Got: '%s'."
+        ) % self.inp.input_type
+
     @transaction.commit_on_success(router.db_for_write(models.ParsedSource))
     def serialize(self):
         """Save NRML sources to the database in hazardlib format along with
         'rupture-enclosing polygon' geometry for each source.
         """
-        assert self.inp.input_type == 'source', (
-            "`Input` object has the wrong `input_type`. Expected: 'source'."
-            "Got: '%s'."
-        ) % self.inp.input_type
-        # First, set the input name to the source model name
-        self.inp.name = self.source_model.name
-        self.inp.save()
-        sources = 0
-        filtered = 0
+        num_sources = 0
+        num_filtered = 0
         for src in self.source_model:
             hazardlib_source = nrml_to_hazardlib(
                 src, self.mesh_spacing, self.bin_width, self.area_src_disc)
-            sources += 1
+            num_sources += 1
             if self.condition(hazardlib_source):
                 models.ParsedSource.objects.create(
                     input=self.inp, source_type=_source_type(src),
                     nrml=hazardlib_source)
-                filtered += 1
-        logs.LOG.info('Considering %d sources of %d', filtered, sources)
+                num_filtered += 1
+        logs.LOG.info('Considering %d sources of %d',
+                      num_filtered, num_sources)
 
 
 class RuptureDBWriter(object):
