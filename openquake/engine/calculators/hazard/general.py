@@ -483,10 +483,10 @@ class BaseHazardCalculator(base.Calculator):
         for src_path in logictree.read_logic_trees(self.hc):
             sources = nrml_parsers.SourceModelParser(
                 os.path.join(self.hc.base_path, src_path)).parse()
-            blocks = block_splitter(sources, self.concurrent_tasks())
-            self.parallelize(
-                import_sources,
-                [(self, src_path, block) for block in blocks])
+            for block in block_splitter(sources, self.concurrent_tasks()):
+                self.parallelize(
+                    import_sources,
+                    [(self, src_path, src) for src in block])
 
     @EnginePerformanceMonitor.monitor
     def parse_risk_models(self):
