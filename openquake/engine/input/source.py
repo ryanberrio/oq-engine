@@ -36,6 +36,7 @@ from openquake.nrmllib.hazard import writers as haz_writers
 from shapely import wkt
 
 from openquake.engine.db import models
+from openquake.engine import logs
 
 # Silencing 'Access to protected member' (WRT hazardlib polygons)
 # pylint: disable=W0212
@@ -534,14 +535,18 @@ class SourceDBWriter(object):
         # First, set the input name to the source model name
         self.inp.name = self.source_model.name
         self.inp.save()
-
+        sources = 0
+        filtered = 0
         for src in self.source_model:
             hazardlib_source = nrml_to_hazardlib(
                 src, self.mesh_spacing, self.bin_width, self.area_src_disc)
+            sources += 1
             if self.condition(hazardlib_source):
                 models.ParsedSource.objects.create(
                     input=self.inp, source_type=_source_type(src),
                     nrml=hazardlib_source)
+                filtered += 1
+        logs.LOG.info('Considering %d sources of %d', filtered, sources)
 
 
 class RuptureDBWriter(object):
