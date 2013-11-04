@@ -35,6 +35,7 @@ from openquake.hazardlib.calc import filters
 from openquake.hazardlib import correlation
 from openquake.hazardlib import geo as hazardlib_geo
 
+from openquake.nrmllib.models import PointSource
 from openquake.nrmllib import parsers as nrml_parsers
 from openquake.nrmllib.risk import parsers
 
@@ -231,7 +232,6 @@ def validate_site_model(sm_nodes, mesh):
         )
 
 
-@task
 def import_sources(calculator, source_model_filename, sources):
     """
     Import into the database the sources satisfying the filtering
@@ -259,7 +259,6 @@ class BaseHazardCalculator(base.Calculator):
 
     def __init__(self, *args, **kwargs):
         super(BaseHazardCalculator, self).__init__(*args, **kwargs)
-
         self.progress.update(in_queue=0)
 
     @property
@@ -479,14 +478,22 @@ class BaseHazardCalculator(base.Calculator):
         :class:`openquake.engine.db.models.ParsedSource`).
         """
         logs.LOG.progress("initializing sources")
-
+        point_sources = []
+        other_sources = []
         for src_path in logictree.read_logic_trees(self.hc):
-            sources = nrml_parsers.SourceModelParser(
-                os.path.join(self.hc.base_path, src_path)).parse()
-            for block in block_splitter(sources, self.concurrent_tasks()):
-                self.parallelize(
-                    import_sources,
-                    [(self, src_path, src) for src in block])
+            for src in nrml_parsers.SourceModelParser(
+                    os.path.join(self.hc.base_path, src_path)).parse():
+                if isinstance(src, PointSource):
+                    point_sources.append(src)
+                else:
+                    other_sources.append(src)
+        logs.LOG.progress("filtering %d point sources", len(point_sources))
+        import_sources(self, src_path, point_sources)
+        del point_sources
+        logs.LOG.progress("filtering %d other sources", len(other_sources))
+        self.parallelize(
+            task(import_sources),
+            [(self, src_path, [src]) for src in other_sources])
 
     @EnginePerformanceMonitor.monitor
     def parse_risk_models(self):
@@ -560,7 +567,7 @@ class BaseHazardCalculator(base.Calculator):
             with logs.tracing('storing exposure'):
                 exposure.ExposureDBWriter(
                     self.job).serialize(
-                        parsers.ExposureModelParser(hc.inputs['exposure']))
+                    parsers.ExposureModelParser(hc.inputs['exposure']))
 
     @EnginePerformanceMonitor.monitor
     def initialize_site_model(self):
