@@ -256,9 +256,6 @@ def _save_gmfs(ses, imt, gmvs_per_site, ruptures_per_site, sites):
         An :class:`openquake.hazardlib.site.SiteCollection` object,
         representing the sites of interest for a calculation.
     """
-    gmf_coll = models.Gmf.objects.get(
-        lt_realization=ses.ses_collection.lt_realization)
-
     sa_period = None
     sa_damping = None
     if isinstance(imt, openquake.hazardlib.imt.SA):
@@ -268,7 +265,6 @@ def _save_gmfs(ses, imt, gmvs_per_site, ruptures_per_site, sites):
 
     for site_id in gmvs_per_site:
         inserter.add(models.GmfData(
-            gmf=gmf_coll,
             ses_id=ses.id,
             imt=imt_name,
             sa_period=sa_period,
@@ -455,9 +451,6 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
                 display_name='gmf-rlz-%s' % lt_rlz.id,
                 output_type='gmf')
 
-            models.Gmf.objects.create(
-                output=output, lt_realization=lt_rlz)
-
         all_ses = []
         for i in xrange(1, self.hc.ses_per_logic_tree_path + 1):
             all_ses.append(
@@ -495,7 +488,6 @@ class EventBasedHazardCalculator(haz_general.BaseHazardCalculator):
                 oq_job=self.job,
                 display_name='complete logic tree GMF',
                 output_type='complete_lt_gmf')
-            models.Gmf.objects.create(output=clt_gmf_output)
 
     def get_source_filter_condition(self):
         """

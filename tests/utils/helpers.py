@@ -622,9 +622,9 @@ def get_risk_job(cfg, username="openquake", hazard_calculation_id=None,
     return job
 
 
-def create_gmf_coll(hazard_job, rlz=None):
+def create_ses_coll(hazard_job, rlz=None):
     """
-    Returns the created Gmf object.
+    Returns the created SESCollection object.
     """
     hc = hazard_job.hazard_calculation
 
@@ -633,23 +633,17 @@ def create_gmf_coll(hazard_job, rlz=None):
         sm_lt_path="test_sm", gsim_lt_path="test_gsim",
         is_complete=False, total_items=1, completed_items=1)
 
-    gmf_coll = models.Gmf.objects.create(
+    return models.SESCollection.objects.create(
         output=models.Output.objects.create_output(
-            hazard_job, "Test Hazard output", "gmf"),
+            hazard_job, "Test SES Collection", "ses"),
         lt_realization=rlz)
-
-    return gmf_coll
 
 
 def create_gmf_data_records(hazard_job, rlz=None, ses_coll=None, points=None):
     """
     Returns the created records.
     """
-    gmf_coll = create_gmf_coll(hazard_job, rlz)
-    ses_coll = ses_coll or models.SESCollection.objects.create(
-        output=models.Output.objects.create_output(
-            hazard_job, "Test SES Collection", "ses"),
-        lt_realization=gmf_coll.lt_realization)
+    ses_coll = ses_coll or create_ses_coll(hazard_job, rlz)
     ruptures = get_ruptures(hazard_job, ses_coll, 3)
     records = []
     if points is None:
@@ -658,7 +652,6 @@ def create_gmf_data_records(hazard_job, rlz=None, ses_coll=None, points=None):
                   (15.481, 38.25)]
     for site_id in hazard_job.hazard_calculation.save_sites(points):
         records.append(models.GmfData.objects.create(
-            gmf=gmf_coll,
             ses=ruptures[0].ses,
             imt="PGA",
             gmvs=[0.1, 0.2, 0.3],
@@ -684,12 +677,7 @@ def create_gmf_from_csv(job, fname):
     job.status = 'post_processing'
     job.save()
 
-    gmf_coll = create_gmf_coll(job)
-
-    ses_coll = models.SESCollection.objects.create(
-        output=models.Output.objects.create_output(
-            job, "Test SES Collection", "ses"),
-        lt_realization=gmf_coll.lt_realization)
+    ses_coll = create_ses_coll(job)
     with open(fname, 'rb') as csvfile:
         gmfreader = csv.reader(csvfile, delimiter=',')
         locations = gmfreader.next()
@@ -704,13 +692,12 @@ def create_gmf_from_csv(job, fname):
             point = tuple(map(float, locations[i].split()))
             [site_id] = job.hazard_calculation.save_sites([point])
             models.GmfData.objects.create(
-                gmf=gmf_coll,
                 ses=ruptures[0].ses,
                 imt="PGA", gmvs=gmvs,
                 rupture_ids=[r.id for r in ruptures],
                 site_id=site_id)
 
-    return gmf_coll
+    return ses_coll
 
 
 def populate_gmf_data_from_csv(job, fname):
@@ -722,9 +709,8 @@ def populate_gmf_data_from_csv(job, fname):
     job.status = 'post_processing'
     job.save()
 
-    gmf_coll = models.Gmf.objects.create(
-        output=models.Output.objects.create_output(
-            job, "Test Hazard output", "gmf_scenario"))
+    ses_coll = create_ses_coll(job)
+    ses = models.SES.objects.create(ses_collection=ses_coll)
 
     with open(fname, 'rb') as csvfile:
         gmfreader = csv.reader(csvfile, delimiter=',')
@@ -738,11 +724,11 @@ def populate_gmf_data_from_csv(job, fname):
             [site_id] = job.hazard_calculation.save_sites([point])
             models.GmfData.objects.create(
                 imt="PGA",
-                gmf=gmf_coll,
+                ses=ses,
                 gmvs=gmvs,
                 site_id=site_id)
 
-    return gmf_coll
+    return ses_coll
 
 
 def get_fake_risk_job(risk_cfg, hazard_cfg, output_type="curve",
@@ -788,16 +774,13 @@ def get_fake_risk_job(risk_cfg, hazard_cfg, output_type="curve",
                 poes=[0.1, 0.2, 0.3],
                 location="%s" % point)
 
-    elif output_type == "gmf_scenario":
-        hazard_output = models.Gmf.objects.create(
-            output=models.Output.objects.create_output(
-                hazard_job, "Test gmf scenario output", "gmf_scenario"))
-
+    elif output_type == "gmf":
+        hazard_output = create_ses_coll(hazard_job)
         site_ids = hazard_job.hazard_calculation.save_sites(
             [(15.48, 38.0900001), (15.565, 38.17), (15.481, 38.25)])
         for site_id in site_ids:
             models.GmfData.objects.create(
-                gmf=hazard_output,
+                ses=models.SES.objects.create(ses_collection=hazard_output),
                 imt="PGA",
                 site_id=site_id,
                 gmvs=[0.1, 0.2, 0.3])

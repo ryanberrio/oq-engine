@@ -1643,6 +1643,88 @@ class SESCollection(djm.Model):
         return SES.objects.filter(ses_collection=self.id).order_by('ordinal') \
             .iterator()
 
+    # NB: uses the helper view gmf_family
+    def get_children(self):
+        """
+        Get the children of a given gmf, if any.
+        :returns:
+          A list of :class:`openquake.engine.db.models.Gmf` instances
+        """
+        curs = getcursor('job_init')
+        curs.execute('select child_id from hzrdr.gmf_family '
+                     'where parent_id=%s', (self.id,))
+        return [self.__class__.objects.get(pk=r[0]) for r in curs]
+
+    # this part is tested in models_test:GmfsPerSesTestCase
+    def get_gmfs(self):
+        """
+        Get the ground motion fields per SES ("GMF set" objects) for
+        the XML export. Each "GMF set" should:
+
+            * have an `investigation_time` attribute
+            * have an `stochastic_event_set_id` attribute
+            * be iterable, yielding a sequence of "GMF" objects
+
+            Each "GMF" object should:
+
+            * have an `imt` attribute
+            * have an `sa_period` attribute (only if `imt` is 'SA')
+            * have an `sa_damping` attribute (only if `imt` is 'SA')
+            * have a `rupture_id` attribute (to indicate which rupture
+              contributed to this gmf)
+            * be iterable, yielding a sequence of "GMF node" objects
+
+            Each "GMF node" object should have:
+
+            * a `gmv` attribute (to indicate the ground motion value
+            * `lon` and `lat` attributes (to indicate the geographical location
+              of the ground motion field)
+        """
+        children = self.get_children()
+        if children:  # complete logic tree
+            all_gmfs = []
+            tot_time = 0.0
+            fake_ses_ordinal = 1
+            for coll in children:
+                for g in coll:
+                    all_gmfs.append(g)
+                    tot_time += g.investigation_time
+            if all_gmfs:
+                yield _GmfsPerSES(
+                    itertools.chain(*all_gmfs), tot_time, fake_ses_ordinal)
+            return
+        # leaf of the tree
+        hc = self.output.oq_job.hazard_calculation
+
+        for ses in SES.objects.filter(ses_collection=self).order_by('ordinal'):
+            query = """
+        SELECT imt, sa_period, sa_damping, tag,
+               array_agg(gmv) AS gmvs,
+               array_agg(ST_X(location::geometry)) AS xs,
+               array_agg(ST_Y(location::geometry)) AS ys
+        FROM (SELECT imt, sa_period, sa_damping, ses_id,
+             unnest(rupture_ids) as rupture_id, location, unnest(gmvs) AS gmv
+           FROM hzrdr.gmf_data, hzrdi.hazard_site
+           WHERE site_id = hzrdi.hazard_site.id AND hazard_calculation_id=%s
+             AND ses_id=%d) AS x, hzrdr.ses_rupture AS y
+        WHERE x.rupture_id = y.id
+        GROUP BY imt, sa_period, sa_damping, tag
+        ORDER BY imt, sa_period, sa_damping, tag;
+        """ % (hc.id, ses.id)
+            with transaction.commit_on_success(using='job_init'):
+                curs = getcursor('job_init')
+                curs.execute(query)
+
+            def gengmfs(data):
+                for imt, sa_period, sa_damping, rupture_tag, gmvs, xs, ys \
+                        in data:
+                    nodes = [_GroundMotionFieldNode(gmv, _Point(x, y))
+                             for gmv, x, y in zip(gmvs, xs, ys)]
+                    yield _GroundMotionField(
+                        imt, sa_period, sa_damping, rupture_tag, nodes)
+            yield _GmfsPerSES(gengmfs(curs), ses.investigation_time,
+                              ses.ordinal)
+
 
 class SES(djm.Model):
     """
@@ -1907,107 +1989,6 @@ class _Point(object):
     def __init__(self, x, y):
         self.x = x
         self.y = y
-
-
-class Gmf(djm.Model):
-    """
-    A collection of ground motion field (GMF) sets for a given logic tree
-    realization.
-    """
-    output = djm.OneToOneField('Output', related_name="gmf")
-    # If `lt_realization` is None, this is a `complete logic tree`
-    # GMF Collection, containing a single GMF set containing all of the ground
-    # motion fields in the calculation.
-    lt_realization = djm.ForeignKey('LtRealization', null=True)
-
-    class Meta:
-        db_table = 'hzrdr\".\"gmf'
-
-    # NB: uses the helper view gmf_family
-    def get_children(self):
-        """
-        Get the children of a given gmf, if any.
-        :returns:
-          A list of :class:`openquake.engine.db.models.Gmf` instances
-        """
-        curs = getcursor('job_init')
-        curs.execute('select child_id from hzrdr.gmf_family '
-                     'where parent_id=%s', (self.id,))
-        return [self.__class__.objects.get(pk=r[0]) for r in curs]
-
-    # this part is tested in models_test:GmfsPerSesTestCase
-    def __iter__(self):
-        """
-        Get the ground motion fields per SES ("GMF set" objects) for
-        the XML export. Each "GMF set" should:
-
-            * have an `investigation_time` attribute
-            * have an `stochastic_event_set_id` attribute
-            * be iterable, yielding a sequence of "GMF" objects
-
-            Each "GMF" object should:
-
-            * have an `imt` attribute
-            * have an `sa_period` attribute (only if `imt` is 'SA')
-            * have an `sa_damping` attribute (only if `imt` is 'SA')
-            * have a `rupture_id` attribute (to indicate which rupture
-              contributed to this gmf)
-            * be iterable, yielding a sequence of "GMF node" objects
-
-            Each "GMF node" object should have:
-
-            * a `gmv` attribute (to indicate the ground motion value
-            * `lon` and `lat` attributes (to indicate the geographical location
-              of the ground motion field)
-        """
-        children = self.get_children()
-        if children:  # complete logic tree
-            all_gmfs = []
-            tot_time = 0.0
-            fake_ses_ordinal = 1
-            for coll in children:
-                for g in coll:
-                    all_gmfs.append(g)
-                    tot_time += g.investigation_time
-            if all_gmfs:
-                yield _GmfsPerSES(
-                    itertools.chain(*all_gmfs), tot_time, fake_ses_ordinal)
-            return
-        # leaf of the tree
-        ses_coll = SESCollection.objects.get(
-            lt_realization=self.lt_realization)
-
-        hc = ses_coll.output.oq_job.hazard_calculation
-
-        for ses in SES.objects.filter(ses_collection=ses_coll
-                                      ).order_by('ordinal'):
-            query = """
-        SELECT imt, sa_period, sa_damping, tag,
-               array_agg(gmv) AS gmvs,
-               array_agg(ST_X(location::geometry)) AS xs,
-               array_agg(ST_Y(location::geometry)) AS ys
-        FROM (SELECT imt, sa_period, sa_damping, ses_id,
-             unnest(rupture_ids) as rupture_id, location, unnest(gmvs) AS gmv
-           FROM hzrdr.gmf_data, hzrdi.hazard_site
-           WHERE site_id = hzrdi.hazard_site.id AND hazard_calculation_id=%s
-             AND gmf_id=%d AND ses_id=%d) AS x, hzrdr.ses_rupture AS y
-        WHERE x.rupture_id = y.id
-        GROUP BY imt, sa_period, sa_damping, tag
-        ORDER BY imt, sa_period, sa_damping, tag;
-        """ % (hc.id, self.id, ses.id)
-            with transaction.commit_on_success(using='job_init'):
-                curs = getcursor('job_init')
-                curs.execute(query)
-
-            def gengmfs(data):
-                for imt, sa_period, sa_damping, rupture_tag, gmvs, xs, ys \
-                        in data:
-                    nodes = [_GroundMotionFieldNode(gmv, _Point(x, y))
-                             for gmv, x, y in zip(gmvs, xs, ys)]
-                    yield _GroundMotionField(
-                        imt, sa_period, sa_damping, rupture_tag, nodes)
-            yield _GmfsPerSES(gengmfs(curs), ses.investigation_time,
-                              ses.ordinal)
 
 
 class _GroundMotionField(object):

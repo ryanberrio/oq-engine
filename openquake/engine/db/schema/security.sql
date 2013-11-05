@@ -78,7 +78,6 @@ GRANT SELECT,INSERT        ON hzrdr.hazard_curve      TO oq_reslt_writer;
 GRANT SELECT,INSERT,UPDATE ON hzrdr.hazard_curve_data TO oq_reslt_writer;
 
 
-GRANT SELECT,INSERT        ON hzrdr.gmf    TO oq_reslt_writer;
 GRANT SELECT,INSERT        ON hzrdr.gmf_data           TO oq_reslt_writer;
 GRANT SELECT,INSERT        ON hzrdr.disagg_result     TO oq_reslt_writer;
 GRANT SELECT,INSERT,UPDATE ON hzrdr.hazard_map        TO oq_reslt_writer;
