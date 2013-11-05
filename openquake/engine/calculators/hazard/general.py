@@ -22,9 +22,10 @@ import math
 import os
 import random
 import re
+import multiprocessing
+from contextlib import closing
 
 import numpy
-from celery.task import task
 from django.db import transaction, connections
 from django.db.models import Sum
 from shapely import geometry
@@ -35,7 +36,6 @@ from openquake.hazardlib.calc import filters
 from openquake.hazardlib import correlation
 from openquake.hazardlib import geo as hazardlib_geo
 
-from openquake.nrmllib.models import PointSource
 from openquake.nrmllib import parsers as nrml_parsers
 from openquake.nrmllib.risk import parsers
 
@@ -232,15 +232,14 @@ def validate_site_model(sm_nodes, mesh):
         )
 
 
-def import_sources(calculator, source_model_filename, sources):
+def import_sources(args):
     """
     Import into the database the sources satisfying the filtering
-    condition.
+    condition
 
-    :param calculator: a BaseHazardCalculator instance
-    :param inp: a source object
-    :param sources: a list of sources
+    :param args: a triple (BaseHazardCalculator instance, filename, sources)
     """
+    calculator, source_model_filename, sources = args
     source.SourceDBWriter(
         calculator.job,
         source_model_filename,
@@ -478,22 +477,25 @@ class BaseHazardCalculator(base.Calculator):
         :class:`openquake.engine.db.models.ParsedSource`).
         """
         logs.LOG.progress("initializing sources")
-        point_sources = []
-        other_sources = []
-        for src_path in logictree.read_logic_trees(self.hc):
-            for src in nrml_parsers.SourceModelParser(
-                    os.path.join(self.hc.base_path, src_path)).parse():
-                if isinstance(src, PointSource):
-                    point_sources.append(src)
-                else:
-                    other_sources.append(src)
-        logs.LOG.progress("filtering %d point sources", len(point_sources))
-        import_sources(self, src_path, point_sources)
-        del point_sources
-        logs.LOG.progress("filtering %d other sources", len(other_sources))
-        self.parallelize(
-            task(import_sources),
-            [(self, src_path, [src]) for src in other_sources])
+        pool = multiprocessing.Pool()
+        try:
+            for src_path in logictree.read_logic_trees(self.hc):
+                sources = list(nrml_parsers.SourceModelParser(
+                               os.path.join(self.hc.base_path, src_path)
+                               ).parse())
+                logs.LOG.progress("filtering %d sources in %s",
+                                  len(sources), src_path)
+                blocks = list(block_splitter(sources, 1000))
+                #import pdb; pdb.set_trace()
+                try:
+                    pool.map(import_sources,
+                             [(self, src_path, block) for block in blocks])
+                except:
+                    import pdb; pdb.set_trace()
+                    raise
+        finally:
+            pool.close()
+            pool.join()
 
     @EnginePerformanceMonitor.monitor
     def parse_risk_models(self):
